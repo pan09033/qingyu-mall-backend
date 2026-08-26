@@ -1,0 +1,47 @@
+@baseUrl = http://127.0.0.1:8000
+@token = 请粘贴登录接口返回的access_token
+
+### 系统首页
+GET {{baseUrl}}/
+Accept: application/json
+
+### 注册普通用户
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "HTTP测试用户",
+  "age": 20,
+  "username": "http_test_user",
+  "password": "abc123456"
+}
+
+### 登录（表单请求）
+POST {{baseUrl}}/auth/login
+Content-Type: application/x-www-form-urlencoded
+
+username=http_test_user&password=abc123456
+
+### 查询当前用户
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{token}}
+Accept: application/json
+
+### 修改当前用户
+PATCH {{baseUrl}}/auth/me
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "age": 21
+}
+
+### 查询自己的订单
+GET {{baseUrl}}/orders/
+Authorization: Bearer {{token}}
+Accept: application/json
+
+### 管理员查询用户列表（需要 admin Token）
+GET {{baseUrl}}/users/?skip=0&limit=10
+Authorization: Bearer {{token}}
+Accept: application/json
