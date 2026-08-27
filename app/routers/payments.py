@@ -4,6 +4,7 @@ from fastapi import (
     APIRouter,
     Depends,
     Header,
+    HTTPException,
     Path,
     status,
 )
@@ -21,6 +22,7 @@ from app.services.payment import (
     create_order_payment,
     get_user_payment_or_404,
     handle_payment_success_callback,
+    simulate_user_payment_success,
 )
 
 
@@ -92,6 +94,30 @@ def get_payment(
     """查询当前用户的一条支付记录。"""
 
     return get_user_payment_or_404(
+        db,
+        current_user.id,
+        payment_id,
+    )
+
+
+@router.post(
+    "/{payment_id}/simulate-success",
+    response_model=PaymentResponse,
+)
+def simulate_payment_success(
+    current_user: CurrentUser,
+    payment_id: Annotated[int, Path(ge=1)],
+    db: Database,
+):
+    """仅在非生产环境模拟当前用户支付成功。"""
+
+    if settings.app_env == "production":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="接口不存在",
+        )
+
+    return simulate_user_payment_success(
         db,
         current_user.id,
         payment_id,

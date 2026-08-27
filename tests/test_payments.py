@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from fastapi import status
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -130,6 +131,73 @@ def test_create_payment_is_idempotent(
     assert first["id"] == second["id"]
     assert first["amount"] == "176.00"
     assert first["status"] == "pending"
+
+
+def test_user_can_simulate_payment_in_development(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """本地演示接口应把支付和订单更新为成功状态。"""
+
+    product_id = add_payment_test_product(db_session)
+    order_id = create_payment_test_order(
+        client,
+        auth_headers,
+        shipping_address_id,
+        product_id,
+    )
+    payment = create_payment_record(
+        client,
+        auth_headers,
+        order_id,
+    )
+
+    response = client.post(
+        f"/payments/{payment['id']}/simulate-success",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["status"] == "success"
+    order_response = client.get(
+        f"/orders/{order_id}",
+        headers=auth_headers,
+    )
+    assert order_response.json()["status"] == "paid"
+
+
+def test_simulated_payment_is_disabled_in_production(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """生产环境不能调用本地模拟支付接口。"""
+
+    product_id = add_payment_test_product(db_session)
+    order_id = create_payment_test_order(
+        client,
+        auth_headers,
+        shipping_address_id,
+        product_id,
+    )
+    payment = create_payment_record(
+        client,
+        auth_headers,
+        order_id,
+    )
+    monkeypatch.setattr(settings, "app_env", "production")
+
+    response = client.post(
+        f"/payments/{payment['id']}/simulate-success",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+    assert response.json() == {"detail": "接口不存在"}
 
 
 def test_success_callback_is_idempotent_and_marks_order_paid(

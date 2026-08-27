@@ -40,6 +40,32 @@ def get_user_payment_or_404(
     return payment
 
 
+def simulate_user_payment_success(
+    db: Session,
+    user_id: int,
+    payment_id: int,
+) -> Payment:
+    """为本地演示生成幂等的支付成功回调。"""
+
+    payment = get_user_payment_or_404(
+        db,
+        user_id,
+        payment_id,
+    )
+    simulation_secret = "internal-development-simulation"
+
+    return handle_payment_success_callback(
+        db,
+        PaymentSuccessCallback(
+            payment_id=payment.id,
+            transaction_no=f"SIMULATED-{payment.id}",
+            amount=payment.amount,
+        ),
+        simulation_secret,
+        simulation_secret,
+    )
+
+
 def create_order_payment(
     db: Session,
     user_id: int,
