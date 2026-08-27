@@ -18,6 +18,11 @@ class ProductBase(BaseModel):
         default=None,
         max_length=200,
     )
+    image_url: str | None = Field(
+        default=None,
+        max_length=500,
+        description="商品主图地址",
+    )
     category_id: int = Field(
         ge=1,
         description="商品分类ID",
@@ -51,6 +56,11 @@ class ProductUpdate(BaseModel):
     description: str | None = Field(
         default=None,
         max_length=200,
+    )
+    image_url: str | None = Field(
+        default=None,
+        max_length=500,
+        description="商品主图地址，传 null 可删除图片",
     )
     category_id: int | None = Field(
         default=None,

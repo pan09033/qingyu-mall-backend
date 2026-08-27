@@ -31,6 +31,10 @@ class Product(Base):
         String(200),
         nullable=True,
     )
+    image_url: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
     category_id: Mapped[int] = mapped_column(
         ForeignKey("categories.id"),
         nullable=False,

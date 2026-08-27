@@ -165,6 +165,41 @@ def test_create_product_with_existing_category(
     assert response.json()["category_id"] == category_id
 
 
+def test_create_and_update_product_image(
+    client: TestClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """管理员可以设置、修改并清除商品主图地址。"""
+
+    category = client.post(
+        "/categories/",
+        headers=admin_headers,
+        json={"name": "商品图片分类"},
+    ).json()
+    image_url = "https://example.com/product.jpg"
+    product = client.post(
+        "/products/",
+        headers=admin_headers,
+        json={
+            "name": "带主图商品",
+            "price": 199,
+            "stock": 8,
+            "category_id": category["id"],
+            "image_url": image_url,
+        },
+    ).json()
+
+    assert product["image_url"] == image_url
+
+    clear_response = client.patch(
+        f"/products/{product['id']}",
+        headers=admin_headers,
+        json={"image_url": None},
+    )
+    assert clear_response.status_code == status.HTTP_200_OK
+    assert clear_response.json()["image_url"] is None
+
+
 def test_create_product_with_missing_category(
     client: TestClient,
     admin_headers: dict[str, str],

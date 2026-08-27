@@ -77,6 +77,7 @@ def create_product(
         price=product_data.price,
         stock=product_data.stock,
         description=product_data.description,
+        image_url=product_data.image_url,
         category_id=product_data.category_id,
     )
 
