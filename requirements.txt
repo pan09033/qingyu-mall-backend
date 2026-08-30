@@ -6,3 +6,4 @@ Alembic==1.18.5
 pwdlib[argon2]
 PyJWT
 pytest
+redis

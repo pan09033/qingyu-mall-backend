@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.models.user import User
+from app.redis_client import redis_client
 
 
 # sqlite:// 表示只存在于内存中的临时数据库
@@ -19,6 +20,49 @@ test_engine = create_engine(
     },
     poolclass=StaticPool,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_redis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """测试期间阻止代码连接开发环境的真实 Redis。"""
+
+    monkeypatch.setattr(
+        redis_client,
+        "get",
+        lambda _key: None,
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "set",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "incr",
+        lambda _key: 1,
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "expire",
+        lambda _key, _seconds: True,
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "eval",
+        lambda *_args: 0,
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "ttl",
+        lambda _key: -2,
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "delete",
+        lambda *_keys: 0,
+    )
 
 
 @pytest.fixture

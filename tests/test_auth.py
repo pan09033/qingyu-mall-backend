@@ -1,5 +1,15 @@
+from unittest.mock import Mock
+
+import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
+from redis.exceptions import RedisError
+
+from app.config import settings
+from app.redis_client import redis_client
+from app.services.login_rate_limit import (
+    RECORD_LOGIN_FAILURE_SCRIPT,
+)
 
 
 def test_register_user(
@@ -154,6 +164,277 @@ def test_login_wrong_password(
     assert response.headers["www-authenticate"] == (
         "Bearer"
     )
+
+
+def test_login_failure_uses_atomic_redis_script(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """登录失败时一次性提交 Lua 脚本和全部参数。"""
+
+    client.post(
+        "/auth/register",
+        json={
+            "name": "登录限流测试用户",
+            "age": 20,
+            "username": "rate_limit_user",
+            "password": "abc123456",
+        },
+    )
+
+    mock_get = Mock(return_value=None)
+    mock_eval = Mock(return_value=0)
+    monkeypatch.setattr(redis_client, "get", mock_get)
+    monkeypatch.setattr(
+        redis_client,
+        "eval",
+        mock_eval,
+    )
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "rate_limit_user",
+            "password": "wrong-password",
+        },
+    )
+
+    lock_key = "rate_limit:login:lock:testclient"
+    failure_key = "rate_limit:login:fail:testclient"
+    level_key = "rate_limit:login:level:testclient"
+    assert response.status_code == (
+        status.HTTP_401_UNAUTHORIZED
+    )
+    mock_get.assert_called_once_with(lock_key)
+    mock_eval.assert_called_once_with(
+        RECORD_LOGIN_FAILURE_SCRIPT,
+        3,
+        failure_key,
+        lock_key,
+        level_key,
+        settings.login_max_failures,
+        settings.login_failure_window_seconds,
+        settings.login_lock_level_ttl_seconds,
+        settings.login_lock_durations_seconds[0],
+        settings.login_lock_durations_seconds[1],
+        settings.login_lock_durations_seconds[2],
+    )
+
+
+def test_login_rate_limit_returns_429(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """失败次数达到上限时，在验证密码前拒绝登录。"""
+
+    mock_get = Mock(
+        return_value=str(settings.login_max_failures)
+    )
+    mock_ttl = Mock(return_value=37)
+    mock_incr = Mock(return_value=6)
+    monkeypatch.setattr(redis_client, "get", mock_get)
+    monkeypatch.setattr(redis_client, "ttl", mock_ttl)
+    monkeypatch.setattr(redis_client, "incr", mock_incr)
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "any_user",
+            "password": "any_password",
+        },
+    )
+
+    lock_key = "rate_limit:login:lock:testclient"
+    assert response.status_code == (
+        status.HTTP_429_TOO_MANY_REQUESTS
+    )
+    assert response.json() == {
+        "detail": "登录失败次数过多，请稍后再试",
+    }
+    assert response.headers["retry-after"] == "37"
+    mock_get.assert_called_once_with(lock_key)
+    mock_ttl.assert_called_once_with(lock_key)
+    mock_incr.assert_not_called()
+
+
+def test_successful_login_clears_failure_counter(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """登录成功后清除同一客户端的旧失败计数。"""
+
+    client.post(
+        "/auth/register",
+        json={
+            "name": "成功登录清除计数用户",
+            "age": 20,
+            "username": "clear_counter_user",
+            "password": "abc123456",
+        },
+    )
+
+    mock_get = Mock(return_value=None)
+    mock_delete = Mock(return_value=1)
+    monkeypatch.setattr(redis_client, "get", mock_get)
+    monkeypatch.setattr(
+        redis_client,
+        "delete",
+        mock_delete,
+    )
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "clear_counter_user",
+            "password": "abc123456",
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    mock_delete.assert_called_once_with(
+        "rate_limit:login:fail:testclient",
+        "rate_limit:login:lock:testclient",
+        "rate_limit:login:level:testclient",
+    )
+
+
+def test_login_continues_when_rate_limit_read_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis 无法读取计数时，正确密码仍然可以登录。"""
+
+    client.post(
+        "/auth/register",
+        json={
+            "name": "读取计数降级测试用户",
+            "age": 20,
+            "username": "redis_get_error_user",
+            "password": "abc123456",
+        },
+    )
+
+    monkeypatch.setattr(
+        redis_client,
+        "get",
+        Mock(side_effect=RedisError("test error")),
+    )
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "redis_get_error_user",
+            "password": "abc123456",
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["access_token"]
+
+
+def test_wrong_password_stays_401_when_counter_write_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis 无法记录失败次数时，保留原本的认证错误。"""
+
+    client.post(
+        "/auth/register",
+        json={
+            "name": "写入计数降级测试用户",
+            "age": 20,
+            "username": "redis_incr_error_user",
+            "password": "abc123456",
+        },
+    )
+
+    monkeypatch.setattr(
+        redis_client,
+        "eval",
+        Mock(side_effect=RedisError("test error")),
+    )
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "redis_incr_error_user",
+            "password": "wrong-password",
+        },
+    )
+
+    assert response.status_code == (
+        status.HTTP_401_UNAUTHORIZED
+    )
+    assert response.json() == {
+        "detail": "用户名或密码错误",
+    }
+
+
+def test_rate_limit_uses_default_time_when_ttl_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已超过限制时，TTL 故障仍返回带默认时间的 429。"""
+
+    monkeypatch.setattr(
+        redis_client,
+        "get",
+        Mock(return_value=str(settings.login_max_failures)),
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "ttl",
+        Mock(side_effect=RedisError("test error")),
+    )
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "any_user",
+            "password": "any_password",
+        },
+    )
+
+    assert response.status_code == (
+        status.HTTP_429_TOO_MANY_REQUESTS
+    )
+    assert response.headers["retry-after"] == str(
+        settings.login_lock_durations_seconds[0]
+    )
+
+
+def test_successful_login_continues_when_counter_delete_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis 无法清理计数时，验证成功的用户仍获得 Token。"""
+
+    client.post(
+        "/auth/register",
+        json={
+            "name": "删除计数降级测试用户",
+            "age": 20,
+            "username": "redis_delete_error_user",
+            "password": "abc123456",
+        },
+    )
+
+    monkeypatch.setattr(
+        redis_client,
+        "delete",
+        Mock(side_effect=RedisError("test error")),
+    )
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "redis_delete_error_user",
+            "password": "abc123456",
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["access_token"]
 
 
 def test_get_current_user(

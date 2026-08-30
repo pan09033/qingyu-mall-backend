@@ -21,7 +21,7 @@ from app.schemas.product import (
 from app.services.product import (
     create_product as create_product_service,
     delete_product as delete_product_service,
-    get_product_or_404,
+    get_product_detail,
     list_products,
     update_product as update_product_service,
 )
@@ -101,7 +101,7 @@ def get_product(
     ],
     db: Database,
 ):
-    return get_product_or_404(
+    return get_product_detail(
         db,
         product_id,
     )

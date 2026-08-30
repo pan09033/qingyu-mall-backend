@@ -1,5 +1,11 @@
+from unittest.mock import Mock
+
+import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
+
+from app.redis_client import redis_client
+from app.schemas.product import ProductResponse
 
 
 def test_get_product_and_missing_product(
@@ -377,3 +383,135 @@ def test_filter_products_by_category_and_keyword(
     )
     assert len(paginated_response.json()["items"]) == 1
     assert paginated_response.json()["total"] == 2
+
+
+def test_get_product_uses_redis_cache(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis 命中时直接返回缓存商品。"""
+
+    cached_product = ProductResponse(
+        id=999,
+        name="Redis缓存商品",
+        price=88,
+        stock=5,
+        description=None,
+        image_url=None,
+        category_id=1,
+    ).model_dump_json()
+
+    monkeypatch.setattr(
+        redis_client,
+        "get",
+        lambda _key: cached_product,
+    )
+
+    response = client.get(
+        "/products/999",
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["name"] == "Redis缓存商品"
+
+
+def test_product_cache_miss_writes_redis(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis 未命中时查询 MySQL，并写入带 TTL 的缓存。"""
+
+    category = client.post(
+        "/categories/",
+        headers=admin_headers,
+        json={"name": "缓存未命中测试分类"},
+    ).json()
+    product = client.post(
+        "/products/",
+        headers=admin_headers,
+        json={
+            "name": "缓存未命中测试商品",
+            "price": 66,
+            "stock": 6,
+            "category_id": category["id"],
+        },
+    ).json()
+
+    mock_get = Mock(return_value=None)
+    mock_set = Mock(return_value=True)
+    monkeypatch.setattr(
+        redis_client,
+        "get",
+        mock_get,
+    )
+    monkeypatch.setattr(
+        redis_client,
+        "set",
+        mock_set,
+    )
+
+    response = client.get(
+        f"/products/{product['id']}",
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+
+    cache_key = f"product:detail:{product['id']}"
+    mock_get.assert_called_once_with(cache_key)
+    mock_set.assert_called_once()
+
+    set_args = mock_set.call_args.args
+    set_kwargs = mock_set.call_args.kwargs
+    cached_product = ProductResponse.model_validate_json(
+        set_args[1]
+    )
+
+    assert set_args[0] == cache_key
+    assert set_kwargs == {"ex": 300}
+    assert cached_product.id == product["id"]
+    assert cached_product.name == product["name"]
+
+def test_update_product_deletes_redis_cache(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """商品更新成功后删除对应的 Redis 缓存。"""
+
+    category = client.post(
+        "/categories/",
+        headers=admin_headers,
+        json={"name": "更新缓存失效测试分类"},
+    ).json()
+    product = client.post(
+        "/products/",
+        headers=admin_headers,
+        json={
+            "name": "更新缓存失效测试商品",
+            "price": 100,
+            "stock": 10,
+            "category_id": category["id"],
+        },
+    ).json()
+
+    mock_delete = Mock(return_value=1)
+    monkeypatch.setattr(
+        redis_client,
+        "delete",
+        mock_delete,
+    )
+
+    response = client.patch(
+        f"/products/{product['id']}",
+        headers=admin_headers,
+        json={"price": 200},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["price"] == 200
+
+    cache_key = f"product:detail:{product['id']}"
+    mock_delete.assert_called_once_with(
+        cache_key
+    )

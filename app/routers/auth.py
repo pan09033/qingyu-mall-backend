@@ -4,6 +4,7 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Request,
     Response,
     status,
 )
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.schemas.auth import TokenResponse, PasswordChange
+from app.schemas.auth import PasswordChange, TokenResponse
 from app.schemas.user import (
     UserRegister,
     UserRegisterResponse,
@@ -23,7 +24,13 @@ from app.schemas.user import (
 from app.security import create_access_token
 from app.services.auth import (
     authenticate_user,
-    register_user, update_password,
+    register_user,
+    update_password,
+)
+from app.services.login_rate_limit import (
+    check_login_rate_limit,
+    clear_login_failures,
+    record_login_failure,
 )
 
 
@@ -61,6 +68,7 @@ def register(
     response_model=TokenResponse,
 )
 def login(
+    request: Request,
     form_data: Annotated[
         OAuth2PasswordRequestForm,
         Depends(),
@@ -69,11 +77,28 @@ def login(
 ):
     """验证账号密码并返回 JWT。"""
 
-    user = authenticate_user(
-        db,
-        form_data.username,
-        form_data.password,
+    client_ip = (
+        request.client.host
+        if request.client is not None
+        else "unknown"
     )
+
+    check_login_rate_limit(client_ip)
+
+    try:
+        user = authenticate_user(
+            db,
+            form_data.username,
+            form_data.password,
+        )
+    except HTTPException as error:
+        if error.status_code == status.HTTP_401_UNAUTHORIZED:
+            record_login_failure(client_ip)
+
+        raise
+
+    clear_login_failures(client_ip)
+
     access_token = create_access_token(
         subject=str(user.id),
     )

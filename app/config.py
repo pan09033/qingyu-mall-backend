@@ -15,6 +15,22 @@ class Settings(BaseSettings):
     db_host: str = "127.0.0.1"
     db_port: int = 3306
     db_name: str
+    redis_host: str = "127.0.0.1"
+    redis_port: int = 6379
+    redis_password: str
+    redis_protocol: Literal[2, 3] = 2
+    redis_connect_timeout_seconds: float = 1.0
+    redis_socket_timeout_seconds: float = 1.0
+
+    login_max_failures: int = 5
+    login_failure_window_seconds: int = 300
+    login_lock_durations_seconds: tuple[int, ...] = (
+        60,
+        300,
+        900,
+    )
+    login_lock_level_ttl_seconds: int = 86400
+
     app_env: Literal[
         "development",
         "testing",
