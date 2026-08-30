@@ -1,5 +1,5 @@
-from datetime import datetime
 from collections.abc import Sequence
+from datetime import datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,6 +12,7 @@ from app.models.refund_request import RefundRequest
 from app.order_status import OrderStatus
 from app.payment_status import PaymentStatus
 from app.refund_status import RefundStatus
+from app.refund_type import RefundType
 from app.repositories.order import get_order_by_id_for_update
 from app.repositories.payment import get_payment_by_order_for_update
 from app.repositories.product import get_products_by_ids_for_update
@@ -95,6 +96,36 @@ def _get_refund_review_context(
     return refund_request, payment, order
 
 
+def _restore_order_stock(
+    db: Session,
+    order: Order,
+) -> None:
+    """锁定订单商品，并把订单数量恢复到库存。"""
+
+    product_ids = [
+        order_item.product_id
+        for order_item in order.items
+    ]
+    products = get_products_by_ids_for_update(
+        db,
+        product_ids,
+    )
+    products_by_id = {
+        product.id: product
+        for product in products
+    }
+
+    for order_item in order.items:
+        product = products_by_id.get(
+            order_item.product_id
+        )
+        if product is None:
+            raise ResourceNotFoundError(
+                "退款订单关联的商品不存在"
+            )
+        product.stock += order_item.quantity
+
+
 def approve_refund_request(
     db: Session,
     admin_id: int,
@@ -110,29 +141,22 @@ def approve_refund_request(
                 refund_id,
             )
         )
+        if (
+            refund_request.refund_type
+            == RefundType.RETURN_AND_REFUND.value
+        ):
+            refund_request.status = RefundStatus.WAITING_RETURN
+            refund_request.reviewer_id = admin_id
+            refund_request.review_note = review_data.review_note
+            refund_request.reviewed_at = datetime.now()
 
-        product_ids = [
-            order_item.product_id
-            for order_item in order.items
-        ]
-        products = get_products_by_ids_for_update(
-            db,
-            product_ids,
-        )
-        products_by_id = {
-            product.id: product
-            for product in products
-        }
-
-        for order_item in order.items:
-            product = products_by_id.get(
-                order_item.product_id
+            db.commit()
+            db.refresh(refund_request)
+            return RefundRequestResponse.model_validate(
+                refund_request
             )
-            if product is None:
-                raise ResourceNotFoundError(
-                    "退款订单关联的商品不存在"
-                )
-            product.stock += order_item.quantity
+
+        _restore_order_stock(db, order)
 
         refund_request.status = RefundStatus.APPROVED
         order.status = OrderStatus.REFUNDED
@@ -164,7 +188,7 @@ def reject_refund_request(
     refund_id: int,
     review_data: RefundReview,
 ) -> RefundRequestResponse:
-    """管理员拒绝退款，订单恢复为已支付状态。"""
+    """管理员拒绝退款，并根据退款类型恢复订单状态。"""
 
     try:
         refund_request, _payment, order = (
@@ -174,9 +198,16 @@ def reject_refund_request(
             )
         )
 
-        # 拒绝退款后，申请结束，订单恢复到已支付状态。
+        # 拒绝退款后，申请结束，并根据退款类型恢复原订单状态。
         refund_request.status = RefundStatus.REJECTED
-        order.status = OrderStatus.PAID
+
+        if (
+            refund_request.refund_type
+            == RefundType.RETURN_AND_REFUND.value
+        ):
+            order.status = OrderStatus.SHIPPED
+        else:
+            order.status = OrderStatus.PAID
 
         # 支付仍然有效，因此不修改支付状态；拒绝退款也不恢复库存。
         refund_request.reviewer_id = admin_id
@@ -197,4 +228,86 @@ def reject_refund_request(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="退款拒绝失败",
+        ) from error
+
+
+def confirm_return_received(
+    db: Session,
+    admin_id: int,
+    refund_id: int,
+) -> RefundRequestResponse:
+    """管理员确认收到退货，并完成退款。"""
+
+    try:
+        refund_request = get_refund_for_update(
+            db,
+            refund_id,
+        )
+
+        if refund_request is None:
+            raise ResourceNotFoundError(
+                "退款申请不存在"
+            )
+
+        if (
+            refund_request.refund_type
+            != RefundType.RETURN_AND_REFUND.value
+        ):
+            raise ConflictError(
+                "仅退货退款申请可以确认收货"
+            )
+
+        if refund_request.status != RefundStatus.RETURNING:
+            raise ConflictError(
+                "当前退款状态不能确认收到退货"
+            )
+
+        payment = get_payment_by_order_for_update(
+            db,
+            refund_request.order_id,
+        )
+        if payment is None:
+            raise ResourceNotFoundError(
+                "订单支付记录不存在"
+            )
+        if payment.status != PaymentStatus.SUCCESS:
+            raise ConflictError(
+                "支付记录当前状态不允许退款"
+            )
+
+        order = get_order_by_id_for_update(
+            db,
+            refund_request.order_id,
+        )
+        if order is None:
+            raise ResourceNotFoundError(
+                "退款申请关联的订单不存在"
+            )
+        if order.status != OrderStatus.REFUND_PENDING:
+            raise ConflictError(
+                "订单当前状态不允许完成退款"
+            )
+
+        _restore_order_stock(db, order)
+
+        refund_request.status = RefundStatus.APPROVED
+        order.status = OrderStatus.REFUNDED
+        payment.status = PaymentStatus.REFUNDED
+        refund_request.reviewer_id = admin_id
+        refund_request.reviewed_at = datetime.now()
+
+        db.commit()
+        db.refresh(refund_request)
+        return RefundRequestResponse.model_validate(
+            refund_request
+        )
+
+    except (ResourceNotFoundError, ConflictError):
+        db.rollback()
+        raise
+    except SQLAlchemyError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="确认退货失败",
         ) from error

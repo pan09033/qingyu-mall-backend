@@ -11,6 +11,7 @@ from app.models.order import Order
 from app.models.payment import Payment
 from app.models.product import Product
 from app.models.refund_request import RefundRequest
+from app.refund_type import RefundType
 
 
 def add_admin_refund_product(
@@ -43,13 +44,13 @@ def add_admin_refund_product(
     return product.id
 
 
-def create_paid_order_and_refund(
+def create_paid_order(
     client: TestClient,
     headers: dict[str, str],
     address_id: int,
     product_id: int,
-) -> tuple[int, int]:
-    """通过真实接口创建已付款订单和待审核退款申请。"""
+) -> int:
+    """通过真实接口创建并支付订单。"""
 
     order_response = client.post(
         "/orders/",
@@ -88,6 +89,24 @@ def create_paid_order_and_refund(
         },
     )
     assert callback_response.status_code == 200
+
+    return order_id
+
+
+def create_paid_order_and_refund(
+    client: TestClient,
+    headers: dict[str, str],
+    address_id: int,
+    product_id: int,
+) -> tuple[int, int]:
+    """通过真实接口创建已付款订单和待审核退款申请。"""
+
+    order_id = create_paid_order(
+        client,
+        headers,
+        address_id,
+        product_id,
+    )
 
     refund_response = client.post(
         f"/refunds/orders/{order_id}",
@@ -154,6 +173,177 @@ def test_admin_approval_refunds_order_and_restores_stock(
         f"/admin/refunds/{refund_id}/approve",
         headers=admin_headers,
         json={},
+    )
+    assert repeated_response.status_code == status.HTTP_409_CONFLICT
+
+    db_session.expire_all()
+    assert db_session.get(Product, product_id).stock == 10
+
+
+def test_admin_approval_waits_for_return(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """批准退货退款后应等待用户退货，不能立即退款。"""
+
+    product_id = add_admin_refund_product(db_session)
+    order_id = create_paid_order(
+        client,
+        admin_headers,
+        shipping_address_id,
+        product_id,
+    )
+
+    order = db_session.get(Order, order_id)
+    assert order is not None
+    order.status = "shipped"
+    db_session.commit()
+
+    refund_response = client.post(
+        f"/refunds/orders/{order_id}",
+        headers=admin_headers,
+        json={
+            "refund_type": RefundType.RETURN_AND_REFUND.value,
+            "reason": "商品存在质量问题",
+        },
+    )
+    assert refund_response.status_code == status.HTTP_201_CREATED
+    assert (
+        refund_response.json()["refund_type"]
+        == RefundType.RETURN_AND_REFUND.value
+    )
+    refund_id = refund_response.json()["id"]
+
+    db_session.expire_all()
+    assert db_session.get(Product, product_id).stock == 8
+
+    approve_response = client.post(
+        f"/admin/refunds/{refund_id}/approve",
+        headers=admin_headers,
+        json={
+            "review_note": "同意用户退货",
+        },
+    )
+
+    assert approve_response.status_code == status.HTTP_200_OK
+    assert approve_response.json()["status"] == "waiting_return"
+    assert approve_response.json()["review_note"] == "同意用户退货"
+
+    db_session.expire_all()
+    order = db_session.get(Order, order_id)
+    payment = db_session.scalar(
+        select(Payment).where(
+            Payment.order_id == order_id,
+        )
+    )
+    refund = db_session.get(RefundRequest, refund_id)
+
+    assert order is not None
+    assert payment is not None
+    assert refund is not None
+    assert order.status == "refund_pending"
+    assert payment.status == "success"
+    assert refund.status == "waiting_return"
+    assert db_session.get(Product, product_id).stock == 8
+
+
+def test_admin_confirms_return_and_completes_refund(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """收到退货后应完成退款并恢复库存，且不能重复确认。"""
+
+    product_id = add_admin_refund_product(db_session)
+    order_id = create_paid_order(
+        client,
+        admin_headers,
+        shipping_address_id,
+        product_id,
+    )
+
+    order = db_session.get(Order, order_id)
+    assert order is not None
+    order.status = "shipped"
+    db_session.commit()
+
+    refund_response = client.post(
+        f"/refunds/orders/{order_id}",
+        headers=admin_headers,
+        json={
+            "refund_type": RefundType.RETURN_AND_REFUND.value,
+            "reason": "商品存在质量问题",
+        },
+    )
+    assert refund_response.status_code == status.HTTP_201_CREATED
+    refund_id = refund_response.json()["id"]
+
+    approve_response = client.post(
+        f"/admin/refunds/{refund_id}/approve",
+        headers=admin_headers,
+        json={
+            "review_note": "同意用户退货",
+        },
+    )
+    assert approve_response.status_code == status.HTTP_200_OK
+    assert approve_response.json()["status"] == "waiting_return"
+
+    early_confirm_response = client.post(
+        f"/admin/refunds/{refund_id}/confirm-return",
+        headers=admin_headers,
+    )
+    assert early_confirm_response.status_code == status.HTTP_409_CONFLICT
+
+    tracking_response = client.patch(
+        f"/refunds/{refund_id}/return-tracking",
+        headers=admin_headers,
+        json={
+            "company": "顺丰速运",
+            "tracking_number": "SF987654321",
+        },
+    )
+    assert tracking_response.status_code == status.HTTP_200_OK
+    assert tracking_response.json()["status"] == "returning"
+
+    db_session.expire_all()
+    assert db_session.get(Product, product_id).stock == 8
+
+    confirm_response = client.post(
+        f"/admin/refunds/{refund_id}/confirm-return",
+        headers=admin_headers,
+    )
+
+    assert confirm_response.status_code == status.HTTP_200_OK
+    assert confirm_response.json()["status"] == "approved"
+    assert confirm_response.json()["return_company"] == "顺丰速运"
+    assert (
+        confirm_response.json()["return_tracking_number"]
+        == "SF987654321"
+    )
+
+    db_session.expire_all()
+    order = db_session.get(Order, order_id)
+    payment = db_session.scalar(
+        select(Payment).where(
+            Payment.order_id == order_id,
+        )
+    )
+    refund = db_session.get(RefundRequest, refund_id)
+
+    assert order is not None
+    assert payment is not None
+    assert refund is not None
+    assert order.status == "refunded"
+    assert payment.status == "refunded"
+    assert refund.status == "approved"
+    assert db_session.get(Product, product_id).stock == 10
+
+    repeated_response = client.post(
+        f"/admin/refunds/{refund_id}/confirm-return",
+        headers=admin_headers,
     )
     assert repeated_response.status_code == status.HTTP_409_CONFLICT
 
@@ -233,6 +423,67 @@ def test_admin_rejection_keeps_payment_and_stock(
     assert repeated_response.status_code == status.HTTP_409_CONFLICT
 
     db_session.expire_all()
+    assert db_session.get(Product, product_id).stock == 8
+
+
+def test_rejected_return_and_refund_restores_shipped_order(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """拒绝退货退款后应将订单恢复为已发货状态。"""
+
+    product_id = add_admin_refund_product(db_session)
+    order_id = create_paid_order(
+        client,
+        admin_headers,
+        shipping_address_id,
+        product_id,
+    )
+
+    order = db_session.get(Order, order_id)
+    assert order is not None
+    order.status = "shipped"
+    db_session.commit()
+
+    refund_response = client.post(
+        f"/refunds/orders/{order_id}",
+        headers=admin_headers,
+        json={
+            "refund_type": RefundType.RETURN_AND_REFUND.value,
+            "reason": "收到商品后发现不合适",
+        },
+    )
+    assert refund_response.status_code == status.HTTP_201_CREATED
+    refund_id = refund_response.json()["id"]
+
+    reject_response = client.post(
+        f"/admin/refunds/{refund_id}/reject",
+        headers=admin_headers,
+        json={
+            "review_note": "不符合退货条件",
+        },
+    )
+
+    assert reject_response.status_code == status.HTTP_200_OK
+    assert reject_response.json()["status"] == "rejected"
+
+    db_session.expire_all()
+    order = db_session.get(Order, order_id)
+    payment = db_session.scalar(
+        select(Payment).where(
+            Payment.order_id == order_id,
+        )
+    )
+    refund = db_session.get(RefundRequest, refund_id)
+
+    assert order is not None
+    assert payment is not None
+    assert refund is not None
+    assert order.status == "shipped"
+    assert payment.status == "success"
+    assert refund.status == "rejected"
     assert db_session.get(Product, product_id).stock == 8
 
 

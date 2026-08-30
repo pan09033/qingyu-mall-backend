@@ -9,8 +9,13 @@ from app.models.user import User
 from app.schemas.refund import (
     RefundRequestCreate,
     RefundRequestResponse,
+    ReturnTrackingSubmit,
 )
-from app.services.refund import create_user_refund_request
+from app.services.refund import (
+    create_user_refund_request,
+    list_user_refund_requests,
+    submit_return_tracking,
+)
 
 
 router = APIRouter(
@@ -26,6 +31,22 @@ CurrentUser = Annotated[
     User,
     Depends(get_current_user),
 ]
+
+
+@router.get(
+    "/",
+    response_model=list[RefundRequestResponse],
+)
+def get_my_refund_requests(
+    current_user: CurrentUser,
+    db: Database,
+):
+    """返回当前用户自己的退款申请和审核结果。"""
+
+    return list_user_refund_requests(
+        db,
+        current_user.id,
+    )
 
 
 @router.post(
@@ -46,4 +67,23 @@ def create_refund_request(
         current_user.id,
         order_id,
         refund_data,
+    )
+
+@router.patch(
+    "/{refund_id}/return-tracking",
+    response_model=RefundRequestResponse,
+)
+def submit_return_tracking_info(
+    current_user: CurrentUser,
+    refund_id: Annotated[int, Path(ge=1)],
+    tracking_data: ReturnTrackingSubmit,
+    db: Database,
+):
+    """提交退货物流信息。"""
+
+    return submit_return_tracking(
+        db,
+        current_user.id,
+        refund_id,
+        tracking_data,
     )

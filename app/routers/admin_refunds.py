@@ -14,6 +14,7 @@ from app.schemas.refund import (
 )
 from app.services.admin_refund import (
     approve_refund_request,
+    confirm_return_received,
     list_admin_refunds,
     reject_refund_request,
 )
@@ -119,4 +120,22 @@ def reject_refund(
         current_admin.id,
         refund_id,
         review_data,
+    )
+
+
+@router.post(
+    "/{refund_id}/confirm-return",
+    response_model=RefundRequestResponse,
+)
+def confirm_return(
+    current_admin: CurrentAdmin,
+    refund_id: Annotated[int, Path(ge=1)],
+    db: Database,
+):
+    """管理员确认收到退货并完成退款。"""
+
+    return confirm_return_received(
+        db,
+        current_admin.id,
+        refund_id,
     )

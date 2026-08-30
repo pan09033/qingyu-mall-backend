@@ -9,9 +9,16 @@ from pydantic import (
     field_validator,
 )
 
+from app.refund_type import RefundType
+
 
 class RefundRequestCreate(BaseModel):
     """用户申请退款的请求模型。"""
+
+    refund_type: RefundType = Field(
+        default=RefundType.REFUND_ONLY,
+        description="退款类型",
+    )
 
     reason: str = Field(
         min_length=2,
@@ -31,6 +38,21 @@ class RefundRequestCreate(BaseModel):
         return cleaned_value
 
 
+class ReturnTrackingSubmit(BaseModel):
+    """用户提交退货物流时的请求数据。"""
+
+    company: str = Field(
+        min_length=2,
+        max_length=50,
+        description="物流公司",
+    )
+    tracking_number: str = Field(
+        min_length=5,
+        max_length=50,
+        description="退货物流单号",
+    )
+
+
 class RefundRequestResponse(BaseModel):
     """退款申请响应模型。"""
 
@@ -44,10 +66,13 @@ class RefundRequestResponse(BaseModel):
     amount: Decimal
     reason: str
     status: str
+    refund_type: RefundType
     reviewer_id: int | None
     review_note: str | None
     created_at: datetime
     reviewed_at: datetime | None
+    return_company: str | None = None
+    return_tracking_number: str | None = None
 
 
 class RefundReview(BaseModel):

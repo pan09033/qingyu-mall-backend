@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.models.category import Category
 from app.models.order import Order
 from app.models.product import Product
+from app.models.refund_request import RefundRequest
+from app.refund_status import RefundStatus
 
 
 def add_refund_test_product(
@@ -100,6 +102,52 @@ def test_paid_order_can_create_refund_request(
     db_session.expire_all()
     assert db_session.get(Order, order_id).status == "refund_pending"
 
+    list_response = client.get(
+        "/refunds/",
+        headers=auth_headers,
+    )
+    assert list_response.status_code == status.HTTP_200_OK
+    assert len(list_response.json()) == 1
+    assert list_response.json()[0]["order_id"] == order_id
+
+    refund_id = response.json()["id"]
+    refund_request = db_session.get(
+        RefundRequest,
+        refund_id,
+    )
+    assert refund_request is not None
+
+    # 暂时模拟管理员已经同意用户退货。
+    refund_request.status = RefundStatus.WAITING_RETURN
+    db_session.commit()
+
+    tracking_response = client.patch(
+        f"/refunds/{refund_id}/return-tracking",
+        headers=auth_headers,
+        json={
+            "company": "顺丰速运",
+            "tracking_number": "SF123456789",
+        },
+    )
+
+    assert tracking_response.status_code == status.HTTP_200_OK
+    assert tracking_response.json()["return_company"] == "顺丰速运"
+    assert (
+        tracking_response.json()["return_tracking_number"]
+        == "SF123456789"
+    )
+    assert tracking_response.json()["status"] == "returning"
+
+    db_session.expire_all()
+    saved_refund = db_session.get(
+        RefundRequest,
+        refund_id,
+    )
+    assert saved_refund is not None
+    assert saved_refund.return_company == "顺丰速运"
+    assert saved_refund.return_tracking_number == "SF123456789"
+    assert saved_refund.status == RefundStatus.RETURNING
+
 
 def test_pending_order_cannot_create_refund_request(
     client: TestClient,
@@ -125,7 +173,7 @@ def test_pending_order_cannot_create_refund_request(
 
     assert response.status_code == status.HTTP_409_CONFLICT
     assert response.json() == {
-        "detail": "只有已付款未发货订单可以申请退款",
+        "detail": "仅退款只适用于已付款未发货订单",
     }
 
 
@@ -179,3 +227,57 @@ def test_user_cannot_refund_other_users_order(
     )
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
+
+def test_pending_refund_cannot_submit_return_tracking(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """等待审核的退款不能提交退货物流。"""
+
+    product_id = add_refund_test_product(db_session)
+    order_id = create_refund_test_order(
+        client,
+        auth_headers,
+        shipping_address_id,
+        product_id,
+    )
+
+    order = db_session.get(Order, order_id)
+    assert order is not None
+    order.status = "paid"
+    db_session.commit()
+
+    create_response = client.post(
+        f"/refunds/orders/{order_id}",
+        headers=auth_headers,
+        json={"reason": "商品不合适"},
+    )
+    assert create_response.status_code == status.HTTP_201_CREATED
+
+    refund_id = create_response.json()["id"]
+
+    tracking_response = client.patch(
+        f"/refunds/{refund_id}/return-tracking",
+        headers=auth_headers,
+        json={
+            "company": "顺丰速运",
+            "tracking_number": "SF123456789",
+        },
+    )
+
+    assert tracking_response.status_code == status.HTTP_409_CONFLICT
+    assert tracking_response.json() == {
+        "detail": "当前退款状态不能填写退货物流",
+    }
+
+    db_session.expire_all()
+    saved_refund = db_session.get(
+        RefundRequest,
+        refund_id,
+    )
+    assert saved_refund is not None
+    assert saved_refund.status == RefundStatus.PENDING
+    assert saved_refund.return_company is None
+    assert saved_refund.return_tracking_number is None

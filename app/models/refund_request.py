@@ -12,10 +12,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.refund_status import RefundStatus
+from app.refund_type import RefundType
 
 
 class RefundRequest(Base):
-    """未发货订单的退款申请。"""
+    """订单退款申请。"""
 
     __tablename__ = "refund_requests"
 
@@ -53,12 +54,26 @@ class RefundRequest(Base):
         server_default=RefundStatus.PENDING.value,
         nullable=False,
     )
+    refund_type: Mapped[str] = mapped_column(
+        String(30),
+        default=RefundType.REFUND_ONLY.value,
+        server_default=RefundType.REFUND_ONLY.value,
+        nullable=False,
+    )
     reviewer_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"),
         nullable=True,
     )
     review_note: Mapped[str | None] = mapped_column(
         String(200),
+        nullable=True,
+    )
+    return_company: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+    return_tracking_number: Mapped[str | None] = mapped_column(
+        String(50),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(

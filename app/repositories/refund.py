@@ -63,6 +63,20 @@ def add_refund_request(
     db.add(refund_request)
 
 
+def get_refunds_by_user(
+    db: Session,
+    user_id: int,
+) -> Sequence[RefundRequest]:
+    """返回当前用户自己的退款申请，最新记录在前。"""
+
+    statement = (
+        select(RefundRequest)
+        .where(RefundRequest.user_id == user_id)
+        .order_by(RefundRequest.id.desc())
+    )
+    return db.scalars(statement).all()
+
+
 def get_admin_refunds(
     db: Session,
     user_id: int | None,
