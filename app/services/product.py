@@ -1,14 +1,22 @@
-import logging
 from collections.abc import Sequence
+from threading import BoundedSemaphore
+from uuid import uuid4
 
 from fastapi import HTTPException, status
-from redis.exceptions import RedisError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.exceptions import ConflictError, ResourceNotFoundError
 from app.models.product import Product
-from app.redis_client import redis_client
+from app.product_cache import (
+    cache_missing_product,
+    cache_product,
+    get_cached_product,
+    invalidate_product_cache,
+    try_acquire_product_cache_rebuild_lock,
+    wait_for_product_cache,
+    release_product_cache_rebuild_lock,
+)
 from app.repositories.product import (
     add_product,
     count_order_items_by_product,
@@ -24,9 +32,13 @@ from app.schemas.product import (
 )
 from app.services.category import get_category_or_404
 
+# 单个后端进程最多允许20个商品详情请求同时回源。
+PRODUCT_DETAIL_DB_MAX_CONCURRENCY = 20
 
-logger = logging.getLogger(__name__)
-
+# 所有商品详情请求共用这一组查询名额。
+product_detail_db_slots = BoundedSemaphore(
+    PRODUCT_DETAIL_DB_MAX_CONCURRENCY
+)
 
 def list_products(
     db: Session,
@@ -77,45 +89,63 @@ def get_product_detail(
 ) -> Product | ProductResponse:
     """优先从 Redis 查询商品详情缓存。"""
 
-    cache_key = f"product:detail:{product_id}"
-    try:
-        cached_product = redis_client.get(
-            cache_key
-        )
-
-    except RedisError:
-        logger.warning(
-            "读取商品缓存失败，回退到 MySQL：product_id=%s",
-            product_id,
-        )
-        cached_product = None
+    cached_product = get_cached_product(product_id)
 
     if cached_product is not None:
-        return ProductResponse.model_validate_json(
-            cached_product
-        )
+        return cached_product
 
-    product = get_product_or_404(
-        db,
+    # 缓存未命中，为本次重建尝试生成唯一标识。
+    lock_token = uuid4().hex
+
+    # 尝试获得当前商品的缓存重建锁。
+    lock_acquired = try_acquire_product_cache_rebuild_lock(
         product_id,
+        lock_token,
     )
-    response = ProductResponse.model_validate(
-        product
-    )
-    try:
-        redis_client.set(
-            cache_key,
-            response.model_dump_json(),
-            ex=300,
-        )
-    except RedisError:
-        logger.warning(
-            "写入商品缓存失败，直接返回 MySQL 结果："
-            "product_id=%s",
-            product_id,
-        )
+    # 没有获得锁时，短暂等待其他请求重建商品缓存。
+    if not lock_acquired:
+        cached_product = wait_for_product_cache(product_id)
+        if cached_product is not None:
+            return cached_product
 
-    return response
+    try:
+        # 获得锁后再次检查，其他请求可能已经建好了缓存。
+        if lock_acquired:
+            cached_product = get_cached_product(product_id)
+            if cached_product is not None:
+                return cached_product
+
+        # 没有查询名额时立即返回，避免请求不断堆积到数据库。
+        acquired = product_detail_db_slots.acquire(
+            blocking=False
+        )
+        if not acquired:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="商品查询繁忙，请稍后重试",
+            )
+        # 查询数据库，并缓存商品或不存在标记。
+        try:
+            try:
+                product = get_product_or_404(
+                    db,
+                    product_id,
+                )
+            finally:
+                # 查到商品、抛出404或查询报错，都归还名额。
+                product_detail_db_slots.release()
+        except ResourceNotFoundError:
+            cache_missing_product(product_id)
+            raise
+
+        return cache_product(product)
+    finally:
+        # 只有获得过锁的请求，才尝试释放自己的锁。
+        if lock_acquired:
+            release_product_cache_rebuild_lock(
+                product_id,
+                lock_token,
+            )
 
 
 def create_product(
@@ -152,6 +182,9 @@ def create_product(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="商品保存失败",
         ) from error
+    invalidate_product_cache(
+        [new_product.id]
+    )
 
     return new_product
 
@@ -191,15 +224,7 @@ def update_product(
             detail="商品更新失败",
         ) from error
 
-    cache_key = f"product:detail:{product_id}"
-    try:
-        redis_client.delete(cache_key)
-    except RedisError:
-        logger.warning(
-            "删除商品旧缓存失败，等待 TTL 过期："
-            "product_id=%s",
-            product_id,
-        )
+    invalidate_product_cache([product_id])
 
     return product
 
@@ -237,13 +262,4 @@ def delete_product(
             detail="商品删除失败",
         ) from error
 
-    cache_key = f"product:detail:{product_id}"
-
-    try:
-        redis_client.delete(cache_key)
-    except RedisError:
-        logger.warning(
-            "删除已下架商品的缓存失败，等待 TTL 过期："
-            "product_id=%s",
-            product_id,
-        )
+    invalidate_product_cache([product_id])

@@ -21,25 +21,38 @@ fastApiProject/
 └── requirements.txt   # Python 依赖
 ```
 
-## 启动项目
+## 安装与配置
 
 ```powershell
-C:\Users\acerpbd\miniconda3\python.exe -m uvicorn app.main:app --reload
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-Swagger 文档：`http://127.0.0.1:8000/docs`
+编辑 `.env`，为数据库、Redis、JWT 和支付回调设置真实配置。生产环境会拒绝短密钥、共用密钥、SQL 日志和通配符 CORS。
 
 ## 数据库迁移
 
 ```powershell
-C:\Users\acerpbd\miniconda3\python.exe -m alembic current
-C:\Users\acerpbd\miniconda3\python.exe -m alembic upgrade head
+python -m alembic current
+python -m alembic upgrade head
 ```
+
+迁移链兼容早期已经手工创建 `products` 表并 stamp 基线的数据库，也支持新建空数据库。
+
+## 启动项目
+
+```powershell
+python -m uvicorn app.main:app --reload
+```
+
+Swagger 文档：`http://127.0.0.1:8000/docs`
 
 ## 自动化测试
 
 ```powershell
-C:\Users\acerpbd\miniconda3\python.exe -m pytest -v
+python -m pytest -v
 ```
 
 测试使用内存 SQLite，不会修改开发 MySQL 数据。

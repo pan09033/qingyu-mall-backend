@@ -9,7 +9,6 @@ from fastapi import (
     status,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -24,10 +23,12 @@ from app.schemas.user import (
 from app.security import create_access_token
 from app.services.auth import (
     authenticate_user,
+    delete_user_account,
     register_user,
     update_password,
 )
 from app.services.login_rate_limit import (
+    build_login_rate_limit_scope,
     check_login_rate_limit,
     clear_login_failures,
     record_login_failure,
@@ -83,7 +84,11 @@ def login(
         else "unknown"
     )
 
-    check_login_rate_limit(client_ip)
+    rate_limit_scope = build_login_rate_limit_scope(
+        client_ip,
+        form_data.username,
+    )
+    check_login_rate_limit(rate_limit_scope)
 
     try:
         user = authenticate_user(
@@ -93,14 +98,15 @@ def login(
         )
     except HTTPException as error:
         if error.status_code == status.HTTP_401_UNAUTHORIZED:
-            record_login_failure(client_ip)
+            record_login_failure(rate_limit_scope)
 
         raise
 
-    clear_login_failures(client_ip)
+    clear_login_failures(rate_limit_scope)
 
     access_token = create_access_token(
         subject=str(user.id),
+        hashed_password=user.hashed_password,
     )
 
     return TokenResponse(
@@ -158,18 +164,7 @@ def delete_me(
 ):
     """删除当前登录账号。"""
 
-    try:
-        db.delete(current_user)
-        db.commit()
-    except SQLAlchemyError as error:
-        db.rollback()
-
-        raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
-            detail="账号删除失败",
-        ) from error
+    delete_user_account(db, current_user)
 
     return Response(
         status_code=status.HTTP_204_NO_CONTENT,

@@ -83,6 +83,8 @@ def create_order_payment(
             raise ConflictError(
                 "只有待付款订单可以创建支付记录"
             )
+        if order.expires_at <= datetime.now():
+            raise ConflictError("订单已超过支付期限")
 
         existing_payment = get_payment_by_order(
             db,
@@ -178,6 +180,8 @@ def handle_payment_success_callback(
             raise ConflictError(
                 "订单当前状态不允许支付"
             )
+        if order.expires_at <= datetime.now():
+            raise ConflictError("订单已超过支付期限")
         if payment.amount != order.total_amount:
             raise ConflictError(
                 "支付记录金额与订单金额不一致"

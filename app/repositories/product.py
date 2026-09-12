@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.order_item import OrderItem
@@ -17,7 +17,10 @@ def build_product_filters(
 
     if keyword is not None:
         conditions.append(
-            Product.name.contains(keyword)
+            or_(
+                Product.name.contains(keyword),
+                Product.description.contains(keyword),
+            )
         )
 
     if category_id is not None:
@@ -43,7 +46,7 @@ def get_products(
     statement = (
         select(Product)
         .where(*conditions)
-        .order_by(Product.id)
+        .order_by(Product.id.desc())
         .offset(skip)
         .limit(limit)
     )
@@ -122,7 +125,7 @@ def get_products_by_ids_for_update(
         .where(
             Product.id.in_(product_ids)
         )
-        .order_by(Product.id)
+        .order_by(Product.id.desc())
         .with_for_update()
     )
 

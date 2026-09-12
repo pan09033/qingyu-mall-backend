@@ -6,7 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.category import Category
+from app.models.outbox_message import OutboxMessage
 from app.models.product import Product
+from app.outbox_status import OutboxStatus
 
 
 def add_checkout_product(
@@ -77,6 +79,14 @@ def test_checkout_creates_order_reduces_stock_and_clears_cart(
     product = db_session.get(Product, product_id)
     assert product is not None
     assert product.stock == 3
+
+    outbox_message = db_session.scalar(
+        select(OutboxMessage).where(
+            OutboxMessage.order_id == order_data["id"],
+        )
+    )
+    assert outbox_message is not None
+    assert outbox_message.status == OutboxStatus.PENDING
 
     cart_response = client.get(
         "/cart/",

@@ -1,13 +1,18 @@
+from datetime import datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi import status
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.category import Category
+from app.models.order import Order
+from app.models.payment import Payment
 from app.models.product import Product
 
 
@@ -51,6 +56,7 @@ def create_payment_test_order(
         "/orders/",
         headers=headers,
         json={
+            "idempotency_key": f"payment-order-{uuid4().hex}",
             "address_id": address_id,
             "items": [
                 {
@@ -131,6 +137,82 @@ def test_create_payment_is_idempotent(
     assert first["id"] == second["id"]
     assert first["amount"] == "176.00"
     assert first["status"] == "pending"
+
+
+def test_expired_order_cannot_create_payment(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """待付款订单超过截止时间后，也不能创建支付记录。"""
+
+    product_id = add_payment_test_product(db_session)
+    order_id = create_payment_test_order(
+        client,
+        auth_headers,
+        shipping_address_id,
+        product_id,
+    )
+    order = db_session.get(Order, order_id)
+    assert order is not None
+    order.expires_at = datetime.now() - timedelta(minutes=1)
+    db_session.commit()
+
+    response = client.post(
+        f"/payments/orders/{order_id}",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.json() == {"detail": "订单已超过支付期限"}
+    assert db_session.scalar(
+        select(Payment).where(Payment.order_id == order_id)
+    ) is None
+
+
+def test_payment_fields_are_enforced_by_database(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """即使绕过接口直接改库，支付金额和状态也不能非法。"""
+
+    product_id = add_payment_test_product(db_session)
+    order_id = create_payment_test_order(
+        client,
+        auth_headers,
+        shipping_address_id,
+        product_id,
+    )
+    payment = create_payment_record(
+        client,
+        auth_headers,
+        order_id,
+    )
+
+    payment_obj = db_session.get(
+        Payment,
+        payment["id"],
+    )
+    assert payment_obj is not None
+
+    payment_obj.amount = Decimal("0")
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
+
+    payment_obj = db_session.get(
+        Payment,
+        payment["id"],
+    )
+    assert payment_obj is not None
+
+    payment_obj.status = "dfj"
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
 
 
 def test_user_can_simulate_payment_in_development(
@@ -236,6 +318,47 @@ def test_success_callback_is_idempotent_and_marks_order_paid(
         headers=auth_headers,
     )
     assert order_response.json()["status"] == "paid"
+
+
+def test_expired_order_rejects_payment_success_callback(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """支付记录已创建，但订单后来过期时，成功回调仍应被拒绝。"""
+
+    product_id = add_payment_test_product(db_session)
+    order_id = create_payment_test_order(
+        client,
+        auth_headers,
+        shipping_address_id,
+        product_id,
+    )
+    payment = create_payment_record(
+        client,
+        auth_headers,
+        order_id,
+    )
+    order = db_session.get(Order, order_id)
+    assert order is not None
+    order.expires_at = datetime.now() - timedelta(minutes=1)
+    db_session.commit()
+
+    response = success_callback(client, payment)
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.json() == {"detail": "订单已超过支付期限"}
+    payment_response = client.get(
+        f"/payments/{payment['id']}",
+        headers=auth_headers,
+    )
+    assert payment_response.json()["status"] == "pending"
+    order_response = client.get(
+        f"/orders/{order_id}",
+        headers=auth_headers,
+    )
+    assert order_response.json()["status"] == "pending"
 
 
 def test_callback_rejects_wrong_amount_and_keeps_order_pending(

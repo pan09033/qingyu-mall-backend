@@ -1,4 +1,5 @@
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi import status
 from fastapi.testclient import TestClient
@@ -53,6 +54,7 @@ def create_pending_order(
         "/orders/",
         headers=headers,
         json={
+            "idempotency_key": f"status-order-{uuid4().hex}",
             "address_id": address_id,
             "items": [
                 {

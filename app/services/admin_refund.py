@@ -11,6 +11,7 @@ from app.models.payment import Payment
 from app.models.refund_request import RefundRequest
 from app.order_status import OrderStatus
 from app.payment_status import PaymentStatus
+from app.product_cache import invalidate_product_cache
 from app.refund_status import RefundStatus
 from app.refund_type import RefundType
 from app.repositories.order import get_order_by_id_for_update
@@ -99,7 +100,7 @@ def _get_refund_review_context(
 def _restore_order_stock(
     db: Session,
     order: Order,
-) -> None:
+) -> list[int]:
     """锁定订单商品，并把订单数量恢复到库存。"""
 
     product_ids = [
@@ -124,6 +125,8 @@ def _restore_order_stock(
                 "退款订单关联的商品不存在"
             )
         product.stock += order_item.quantity
+
+    return product_ids
 
 
 def approve_refund_request(
@@ -156,7 +159,7 @@ def approve_refund_request(
                 refund_request
             )
 
-        _restore_order_stock(db, order)
+        restored_product_ids = _restore_order_stock(db, order)
 
         refund_request.status = RefundStatus.APPROVED
         order.status = OrderStatus.REFUNDED
@@ -167,6 +170,7 @@ def approve_refund_request(
 
         db.commit()
         db.refresh(refund_request)
+        invalidate_product_cache(restored_product_ids)
         return RefundRequestResponse.model_validate(
             refund_request
         )
@@ -288,7 +292,7 @@ def confirm_return_received(
                 "订单当前状态不允许完成退款"
             )
 
-        _restore_order_stock(db, order)
+        restored_product_ids = _restore_order_stock(db, order)
 
         refund_request.status = RefundStatus.APPROVED
         order.status = OrderStatus.REFUNDED
@@ -298,6 +302,7 @@ def confirm_return_received(
 
         db.commit()
         db.refresh(refund_request)
+        invalidate_product_cache(restored_product_ids)
         return RefundRequestResponse.model_validate(
             refund_request
         )

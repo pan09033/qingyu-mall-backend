@@ -125,7 +125,10 @@ def add_product_to_cart(
         new_quantity = cart_data.quantity
         if cart_item is not None:
             new_quantity += cart_item.quantity
-
+        if new_quantity > 99:
+            raise ConflictError(
+                "同一商品最多加入购物车99件"
+            )
         if new_quantity > product.stock:
             raise ConflictError(
                 f"商品“{product.name}”库存不足"

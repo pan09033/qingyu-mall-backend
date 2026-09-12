@@ -1,8 +1,11 @@
 from decimal import Decimal
+from uuid import uuid4
 
+import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.category import Category
@@ -52,6 +55,7 @@ def create_refund_test_order(
         "/orders/",
         headers=headers,
         json={
+            "idempotency_key": f"refund-order-{uuid4().hex}",
             "address_id": address_id,
             "items": [
                 {
@@ -147,6 +151,68 @@ def test_paid_order_can_create_refund_request(
     assert saved_refund.return_company == "顺丰速运"
     assert saved_refund.return_tracking_number == "SF123456789"
     assert saved_refund.status == RefundStatus.RETURNING
+
+
+def test_refund_fields_are_enforced_by_database(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    shipping_address_id: int,
+    db_session: Session,
+) -> None:
+    """即使绕过接口直接改库，退款金额、状态和类型也不能非法。"""
+
+    product_id = add_refund_test_product(db_session)
+    order_id = create_refund_test_order(
+        client,
+        auth_headers,
+        shipping_address_id,
+        product_id,
+    )
+    order = db_session.get(Order, order_id)
+    assert order is not None
+    order.status = "paid"
+    db_session.commit()
+
+    response = client.post(
+        f"/refunds/orders/{order_id}",
+        headers=auth_headers,
+        json={"reason": "商品不合适"},
+    )
+    assert response.status_code == status.HTTP_201_CREATED
+    refund_id = response.json()["id"]
+
+    refund_request = db_session.get(
+        RefundRequest,
+        refund_id,
+    )
+    assert refund_request is not None
+
+    refund_request.amount = Decimal("0")
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
+
+    refund_request = db_session.get(
+        RefundRequest,
+        refund_id,
+    )
+    assert refund_request is not None
+
+    refund_request.status = "dfj"
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
+
+    refund_request = db_session.get(
+        RefundRequest,
+        refund_id,
+    )
+    assert refund_request is not None
+
+    refund_request.refund_type = "dfj"
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
 
 
 def test_pending_order_cannot_create_refund_request(

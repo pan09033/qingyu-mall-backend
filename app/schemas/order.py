@@ -1,12 +1,23 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Annotated
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     model_validator,
+    StringConstraints,
 )
+
+IdempotencyKey = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=100,
+    ),
+]
 
 
 class OrderItemCreate(BaseModel):
@@ -25,6 +36,10 @@ class OrderItemCreate(BaseModel):
 
 class OrderCreate(BaseModel):
     """创建包含多项商品的订单。"""
+
+    idempotency_key: IdempotencyKey = Field(
+        description="本次创建订单请求的幂等键",
+    )
 
     address_id: int = Field(
         ge=1,
@@ -93,6 +108,7 @@ class OrderResponse(BaseModel):
     district: str
     detail_address: str
     created_at: datetime
+    expires_at: datetime
     items: list[OrderItemResponse]
 
 

@@ -1,11 +1,14 @@
 from decimal import Decimal
 
+import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.category import Category
+from app.models.cart_item import CartItem
 from app.models.product import Product
 
 
@@ -132,6 +135,81 @@ def test_adding_same_product_merges_quantity(
     assert len(response.json()["items"]) == 1
     assert response.json()["items"][0]["quantity"] == 5
     assert response.json()["total_quantity"] == 5
+
+
+def test_cart_rejects_accumulated_quantity_above_99(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+) -> None:
+    """单次加入合法，但累计超过99件时拒绝并保留原数量。"""
+
+    product_id = add_cart_test_product(
+        db_session,
+        stock=200,
+    )
+    first_response = client.post(
+        "/cart/items",
+        headers=auth_headers,
+        json={
+            "product_id": product_id,
+            "quantity": 60,
+        },
+    )
+    second_response = client.post(
+        "/cart/items",
+        headers=auth_headers,
+        json={
+            "product_id": product_id,
+            "quantity": 60,
+        },
+    )
+
+    assert first_response.status_code == status.HTTP_201_CREATED
+    assert second_response.status_code == status.HTTP_409_CONFLICT
+    assert second_response.json() == {
+        "detail": "同一商品最多加入购物车99件",
+    }
+
+    cart_response = client.get(
+        "/cart/",
+        headers=auth_headers,
+    )
+    assert cart_response.json()["items"][0]["quantity"] == 60
+
+
+def test_cart_item_quantity_range_is_enforced_by_database(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+) -> None:
+    """即使绕过接口直接改库，购物车数量也不能超过99。"""
+
+    product_id = add_cart_test_product(
+        db_session,
+        stock=200,
+    )
+    response = client.post(
+        "/cart/items",
+        headers=auth_headers,
+        json={
+            "product_id": product_id,
+            "quantity": 1,
+        },
+    )
+    assert response.status_code == status.HTTP_201_CREATED
+
+    cart_item = db_session.scalar(
+        select(CartItem).where(
+            CartItem.product_id == product_id,
+        )
+    )
+    assert cart_item is not None
+
+    cart_item.quantity = 100
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
 
 
 def test_cart_rejects_quantity_above_current_stock(

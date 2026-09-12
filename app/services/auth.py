@@ -8,6 +8,7 @@ from app.exceptions import ConflictError
 from app.models.user import User
 from app.repositories.user import (
     add_user,
+    count_orders_by_user,
     get_user_by_username,
 )
 from app.schemas.auth import PasswordChange
@@ -130,6 +131,37 @@ def authenticate_user(
         )
 
     return user
+
+
+def delete_user_account(
+    db: Session,
+    current_user: User,
+) -> None:
+    """删除无业务记录的账号，并保护订单、支付和退款历史。"""
+
+    if count_orders_by_user(db, current_user.id) > 0:
+        raise ConflictError(
+            "账号存在订单记录，不能直接删除"
+        )
+
+    try:
+        db.delete(current_user)
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise ConflictError(
+            "账号存在业务记录，不能直接删除"
+        ) from error
+    except SQLAlchemyError as error:
+        db.rollback()
+        logger.exception(
+            "用户删除账号失败：user_id=%s",
+            current_user.id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="账号删除失败",
+        ) from error
 
 
 def update_password(

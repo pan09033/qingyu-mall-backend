@@ -18,6 +18,7 @@ from app.database import get_db
 from app.exceptions import PermissionDeniedError
 from app.models.user import User
 from app.repositories.user import get_user_by_id
+from app.security import credential_marker_matches
 
 
 def pagination_parameters(
@@ -74,7 +75,11 @@ def get_current_user(
 
         # 登录时将用户id以字符串形式保存在sub中。
         subject = payload.get("sub")
-        if subject is None:
+        credential_marker = payload.get("pwd")
+        if subject is None or not isinstance(
+            credential_marker,
+            str,
+        ):
             raise credentials_exception
 
         user_id = int(subject)
@@ -87,7 +92,15 @@ def get_current_user(
         user_id,
     )
 
-    if user is None or user.username is None:
+    if (
+        user is None
+        or user.username is None
+        or user.hashed_password is None
+        or not credential_marker_matches(
+            credential_marker,
+            user.hashed_password,
+        )
+    ):
         raise credentials_exception
 
     return user

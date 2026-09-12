@@ -1,4 +1,5 @@
 import logging
+from hashlib import sha256
 
 from fastapi import HTTPException, status
 from redis.exceptions import RedisError
@@ -89,36 +90,47 @@ return new_lock_level
 """
 
 
-def _failure_key(
+def build_login_rate_limit_scope(
     client_ip: str,
+    username: str,
+) -> str:
+    """生成不暴露用户名的稳定限流作用域。"""
+
+    normalized_username = username.strip().lower()
+    identity = f"{client_ip}\0{normalized_username}"
+    return sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _failure_key(
+    scope: str,
 ) -> str:
     """生成登录失败计数 Key。"""
 
-    return f"rate_limit:login:fail:{client_ip}"
+    return f"rate_limit:login:fail:{scope}"
 
 
 def _lock_key(
-    client_ip: str,
+    scope: str,
 ) -> str:
     """生成登录锁定状态 Key。"""
 
-    return f"rate_limit:login:lock:{client_ip}"
+    return f"rate_limit:login:lock:{scope}"
 
 
 def _lock_level_key(
-    client_ip: str,
+    scope: str,
 ) -> str:
     """生成登录锁定等级 Key。"""
 
-    return f"rate_limit:login:level:{client_ip}"
+    return f"rate_limit:login:level:{scope}"
 
 
 def check_login_rate_limit(
-    client_ip: str,
+    scope: str,
 ) -> None:
     """检查客户端当前是否处于登录锁定状态。"""
 
-    lock_key = _lock_key(client_ip)
+    lock_key = _lock_key(scope)
 
     try:
         lock_value = redis_client.get(
@@ -157,13 +169,13 @@ def check_login_rate_limit(
 
 
 def record_login_failure(
-    client_ip: str,
+    scope: str,
 ) -> None:
     """以原子方式记录登录失败并按需创建锁。"""
 
-    failure_key = _failure_key(client_ip)
-    lock_key = _lock_key(client_ip)
-    level_key = _lock_level_key(client_ip)
+    failure_key = _failure_key(scope)
+    lock_key = _lock_key(scope)
+    level_key = _lock_level_key(scope)
 
     try:
         redis_client.eval(
@@ -186,13 +198,13 @@ def record_login_failure(
 
 
 def clear_login_failures(
-    client_ip: str,
+    scope: str,
 ) -> None:
     """清理登录失败计数。"""
 
-    failure_key = _failure_key(client_ip)
-    lock_key = _lock_key(client_ip)
-    level_key = _lock_level_key(client_ip)
+    failure_key = _failure_key(scope)
+    lock_key = _lock_key(scope)
+    level_key = _lock_level_key(scope)
 
     try:
         redis_client.delete(

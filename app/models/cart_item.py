@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     UniqueConstraint,
@@ -20,6 +21,10 @@ class CartItem(Base):
             "user_id",
             "product_id",
             name="uq_cart_items_user_id_product_id",
+        ),
+        CheckConstraint(
+            "quantity BETWEEN 1 AND 99",
+            name="ck_cart_items_quantity_range",
         ),
     )
 

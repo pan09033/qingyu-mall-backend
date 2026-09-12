@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.order import Order
 from app.models.user import User
 
 
@@ -48,6 +49,18 @@ def count_users(
     statement = select(
         func.count(User.id)
     ).where(*conditions)
+    return db.scalar(statement) or 0
+
+
+def count_orders_by_user(
+    db: Session,
+    user_id: int,
+) -> int:
+    """统计必须保留的用户订单记录。"""
+
+    statement = select(func.count(Order.id)).where(
+        Order.user_id == user_id,
+    )
     return db.scalar(statement) or 0
 
 def get_user_by_id(

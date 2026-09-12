@@ -7,3 +7,6 @@ pwdlib[argon2]
 PyJWT
 pytest
 redis
+pika==1.4.4
+minio==7.2.20
+Pillow==12.3.0

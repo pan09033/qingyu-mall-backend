@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Numeric,
@@ -21,6 +22,26 @@ if TYPE_CHECKING:
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        CheckConstraint(
+            "total_amount >= 0",
+            name="ck_orders_total_amount_nonnegative",
+        ),
+        CheckConstraint(
+            (
+                "status IN ("
+                "'pending', "
+                "'paid', "
+                "'shipped', "
+                "'completed', "
+                "'cancelled', "
+                "'refund_pending', "
+                "'refunded'"
+                ")"
+            ),
+            name="ck_orders_status_allowed",
+        ),
+    )
 
     # 订单编号
     id: Mapped[int] = mapped_column(
@@ -51,6 +72,10 @@ class Order(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         server_default=func.now(),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime,
         nullable=False,
     )
 

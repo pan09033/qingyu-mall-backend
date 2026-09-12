@@ -1,15 +1,21 @@
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from decimal import Decimal
+import hashlib
+import json
 
 from fastapi import HTTPException, status
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.models.order_idempotency_key import OrderIdempotencyKey
 from app.models.order import Order
 from app.models.order_item import OrderItem
+from app.models.outbox_message import OutboxMessage
 from app.models.user import User
 from app.models.address import Address
 from app.order_status import OrderStatus
+from app.product_cache import invalidate_product_cache
 from app.repositories.address import get_address_by_user
 from app.repositories.cart import (
     clear_cart_items_by_user,
@@ -23,6 +29,11 @@ from app.repositories.order import (
     get_order_by_user_for_update,
     get_orders_by_user,
 )
+from app.repositories.order_idempotency import (
+    add_order_idempotency_key,
+    get_order_idempotency_key,
+)
+from app.repositories.outbox import add_outbox_message
 from app.repositories.user import get_user_by_id
 from app.schemas.cart import CartCheckout
 from app.schemas.order import (
@@ -30,13 +41,61 @@ from app.schemas.order import (
     OrderItemCreate,
     OrderShippingAddressUpdate,
 )
+from app.mq.messages import OrderExpirationMessage
 from app.exceptions import (
     ConflictError,
     ResourceNotFoundError,
+    RetryableOrderExpirationError,
 )
 from app.repositories.product import (
     get_products_by_ids_for_update,
 )
+
+
+def build_order_request_hash(
+    order_data: OrderCreate,
+) -> str:
+    """根据下单核心内容生成稳定摘要。"""
+
+    payload = {
+        "address_id": order_data.address_id,
+        "items": sorted(
+            (
+                {
+                    "product_id": item.product_id,
+                    "quantity": item.quantity,
+                }
+                for item in order_data.items
+            ),
+            key=lambda item: item["product_id"],
+        ),
+    }
+    encoded_payload = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded_payload).hexdigest()
+
+
+def get_idempotent_order_or_raise(
+    record: OrderIdempotencyKey,
+    request_hash: str,
+) -> Order:
+    """返回重复请求对应的订单；同 key 不同内容时拒绝。"""
+
+    if record.request_hash != request_hash:
+        raise ConflictError(
+            "幂等键已被其他订单请求使用"
+        )
+
+    if record.order is None:
+        raise ConflictError(
+            "订单正在处理中，请稍后重试"
+        )
+
+    return record.order
 
 
 def get_user_or_404(
@@ -121,7 +180,32 @@ def create_user_order(
     """为指定用户创建订单。"""
 
     get_user_or_404(db, user_id)
+    request_hash = build_order_request_hash(order_data)
+
+    existing_record = get_order_idempotency_key(
+        db,
+        user_id,
+        order_data.idempotency_key,
+    )
+    if existing_record is not None:
+        return get_idempotent_order_or_raise(
+            existing_record,
+            request_hash,
+        )
+
+    idempotency_record = OrderIdempotencyKey(
+        user_id=user_id,
+        idempotency_key=order_data.idempotency_key,
+        request_hash=request_hash,
+    )
+
     try:
+        add_order_idempotency_key(
+            db,
+            idempotency_record,
+        )
+        db.flush()
+
         address = get_address_by_user(
             db,
             user_id,
@@ -138,12 +222,36 @@ def create_user_order(
             address,
             order_data.items,
         )
+        idempotency_record.order = new_order
+        add_order_expiration_outbox_message(
+            db,
+            new_order,
+        )
         db.commit()
         db.refresh(new_order)
+        invalidate_product_cache(
+            item.product_id for item in new_order.items
+        )
     except (ResourceNotFoundError, ConflictError):
         # 业务校验失败时也要回滚，及时释放已获得的商品行锁。
         db.rollback()
         raise
+    except IntegrityError as error:
+        db.rollback()
+        existing_record = get_order_idempotency_key(
+            db,
+            user_id,
+            order_data.idempotency_key,
+        )
+        if existing_record is not None:
+            return get_idempotent_order_or_raise(
+                existing_record,
+                request_hash,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="订单保存失败",
+        ) from error
     except SQLAlchemyError as error:
         db.rollback()
         raise HTTPException(
@@ -207,8 +315,8 @@ def build_user_order(
         city=address.city,
         district=address.district,
         detail_address=address.detail_address,
+        expires_at=datetime.now() + timedelta(minutes=30),
     )
-
     for product, item_data in validated_items:
         product.stock -= item_data.quantity
         new_order.items.append(
@@ -222,6 +330,27 @@ def build_user_order(
 
     add_order(db, new_order)
     return new_order
+
+
+def add_order_expiration_outbox_message(
+    db: Session,
+    order: Order,
+) -> None:
+    """在订单事务中记录一条待发送的订单过期消息。"""
+
+    # flush 先取得订单 ID，但不会提交事务；后续失败时仍能整体回滚。
+    db.flush()
+    message = OrderExpirationMessage(
+        order_id=order.id,
+    )
+    add_outbox_message(
+        db,
+        OutboxMessage(
+            order_id=order.id,
+            event_type="order.expiration",
+            payload=message.model_dump(),
+        ),
+    )
 
 
 def checkout_user_cart(
@@ -269,6 +398,10 @@ def checkout_user_cart(
             address,
             order_items,
         )
+        add_order_expiration_outbox_message(
+            db,
+            new_order,
+        )
 
         # 这里只标记删除；订单、库存和购物车最后一起提交。
         clear_cart_items_by_user(
@@ -277,6 +410,9 @@ def checkout_user_cart(
         )
         db.commit()
         db.refresh(new_order)
+        invalidate_product_cache(
+            item.product_id for item in new_order.items
+        )
         return new_order
 
     except (ResourceNotFoundError, ConflictError):
@@ -346,6 +482,7 @@ def cancel_user_order(
 
         db.commit()
         db.refresh(order)
+        invalidate_product_cache(product_ids)
     except (ResourceNotFoundError, ConflictError):
         db.rollback()
         raise
@@ -357,6 +494,70 @@ def cancel_user_order(
         ) from error
 
     return order
+
+
+def expire_pending_order(
+    db: Session,
+    order_id: int,
+) -> Order | None:
+    """取消已经过期的待付款订单，并恢复商品库存。"""
+
+    try:
+        order = get_order_by_id_for_update(
+            db,
+            order_id,
+        )
+
+        if order is None:
+            db.rollback()
+            return None
+
+        if order.status != OrderStatus.PENDING:
+            db.rollback()
+            return order
+
+        if order.expires_at > datetime.now():
+            db.rollback()
+            return order
+
+        product_ids = [
+            order_item.product_id
+            for order_item in order.items
+        ]
+        products = get_products_by_ids_for_update(
+            db,
+            product_ids,
+        )
+        products_by_id = {
+            product.id: product
+            for product in products
+        }
+
+        for order_item in order.items:
+            product = products_by_id.get(
+                order_item.product_id
+            )
+            if product is None:
+                raise ResourceNotFoundError(
+                    "订单关联的商品不存在"
+                )
+            product.stock += order_item.quantity
+
+        order.status = OrderStatus.CANCELLED
+
+        db.commit()
+        db.refresh(order)
+        invalidate_product_cache(product_ids)
+        return order
+
+    except ResourceNotFoundError:
+        db.rollback()
+        raise
+    except SQLAlchemyError as error:
+        db.rollback()
+        raise RetryableOrderExpirationError(
+            "订单过期处理遇到数据库故障"
+        ) from error
 
 
 def ship_paid_order(

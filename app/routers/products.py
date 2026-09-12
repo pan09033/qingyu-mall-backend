@@ -55,7 +55,7 @@ def get_products(
         Query(
             min_length=1,
             max_length=30,
-            description="商品名称关键词",
+            description="商品名称或描述关键词",
         ),
     ] = None,
     skip: Annotated[

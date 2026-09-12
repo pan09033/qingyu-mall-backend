@@ -19,6 +19,7 @@ from app.routers import (
     products,
     refunds,
     users,
+    media,
 )
 
 
@@ -73,7 +74,7 @@ app.include_router(payments.router)
 app.include_router(admin_orders.router)
 app.include_router(refunds.router)
 app.include_router(admin_refunds.router)
-
+app.include_router(media.router)
 
 @app.get("/", tags=["系统"])
 def root() -> dict[str, str]:

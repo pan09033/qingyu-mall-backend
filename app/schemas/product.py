@@ -1,18 +1,34 @@
-from typing import Any
+from decimal import Decimal
+from typing import Annotated
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_serializer,
     field_validator,
+    model_validator,
+    StringConstraints,
 )
 
+ProductName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=30,
+    ),
+]
 
 class ProductBase(BaseModel):
     """商品响应和后续创建模型可复用的公共字段。"""
 
-    name: str
-    price: float = Field(gt=0)
+    name: ProductName
+    price: Decimal = Field(
+        gt=0,
+        max_digits=10,
+        decimal_places=2,
+    )
     stock: int = Field(ge=0)
     description: str | None = Field(
         default=None,
@@ -36,18 +52,22 @@ class ProductResponse(ProductBase):
     )
     id: int
 
+    @field_serializer("price", when_used="json")
+    def serialize_price(self, price: Decimal) -> float:
+        """保持现有 JSON 数字格式，同时在校验与计算阶段使用 Decimal。"""
+
+        return float(price)
+
 
 class ProductUpdate(BaseModel):
     """商品部分更新请求模型。"""
 
-    name: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=30,
-    )
-    price: float | None = Field(
+    name: ProductName | None = None
+    price: Decimal | None = Field(
         default=None,
         gt=0,
+        max_digits=10,
+        decimal_places=2,
     )
     stock: int | None = Field(
         default=None,
@@ -66,20 +86,6 @@ class ProductUpdate(BaseModel):
         default=None,
         ge=1,
     )
-
-    @field_validator("name", mode="before")
-    @classmethod
-    def clean_name(cls, value: Any) -> Any:
-        """提供商品名称时，清理两侧空格并拒绝纯空格。"""
-        if not isinstance(value, str):
-            return value
-
-        cleaned_name = value.strip()
-        if not cleaned_name:
-            raise ValueError("商品名称不能为空")
-
-        return cleaned_name
-
     @field_validator(
         "name",
         "price",
@@ -89,13 +95,22 @@ class ProductUpdate(BaseModel):
     @classmethod
     def reject_null(
         cls,
-        value: str | float | int | None,
-    ) -> str | float | int:
+        value: ProductName | Decimal | int | None,
+    ) -> ProductName | Decimal | int:
         """更新字段可以省略，但不能明确传入 null。"""
         if value is None:
             raise ValueError("更新字段不能为 null")
 
         return value
+
+    @model_validator(mode="after")
+    def require_update_field(self) -> "ProductUpdate":
+        """PATCH 请求至少提供一个需要修改的字段。"""
+
+        if not self.model_fields_set:
+            raise ValueError("至少需要提供一个更新字段")
+
+        return self
 
 
 class ProductCreate(ProductBase):

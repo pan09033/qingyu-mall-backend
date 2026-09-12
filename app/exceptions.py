@@ -34,3 +34,7 @@ class ConflictError(AppError):
         detail: str = '数据冲突')->None:
         super().__init__(status_code=409,
                          detail=detail,)
+
+
+class RetryableOrderExpirationError(Exception):
+    """订单过期任务遇到可以重试的数据库故障。"""

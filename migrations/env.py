@@ -13,6 +13,8 @@ from app.database import (
 from app.models.product import Product  # noqa: F401
 from app.models.user import User  # noqa: F401
 from app.models.order import Order  # noqa: F401
+from app.models.order_idempotency_key import OrderIdempotencyKey  # noqa: F401
+from app.models.outbox_message import OutboxMessage  # noqa: F401
 from app.models.category import Category  # noqa: F401
 from app.models.order_item import OrderItem  # noqa: F401
 from app.models.address import Address  # noqa: F401

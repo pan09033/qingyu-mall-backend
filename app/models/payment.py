@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Numeric,
@@ -18,6 +19,23 @@ class Payment(Base):
     """订单支付记录。"""
 
     __tablename__ = "payments"
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_payments_amount_positive",
+        ),
+        CheckConstraint(
+            (
+                "status IN ("
+                "'pending', "
+                "'success', "
+                "'failed', "
+                "'refunded'"
+                ")"
+            ),
+            name="ck_payments_status_allowed",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,

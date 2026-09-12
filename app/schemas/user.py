@@ -5,6 +5,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
 from app.schemas.order import OrderResponse
@@ -92,6 +93,15 @@ class UserUpdate(BaseModel):
 
         return value
 
+    @model_validator(mode="after")
+    def require_update_field(self) -> "UserUpdate":
+        """PATCH 请求至少提供一个需要修改的字段。"""
+
+        if not self.model_fields_set:
+            raise ValueError("至少需要提供一个更新字段")
+
+        return self
+
 
 class UserListResponse(BaseModel):
     """用户列表接口的响应模型。"""
@@ -143,6 +153,4 @@ class UserRoleUpdate(BaseModel):
         "user",
         "admin",
     ]
-
-
 

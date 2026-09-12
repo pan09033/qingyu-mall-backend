@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Numeric,
@@ -19,6 +20,33 @@ class RefundRequest(Base):
     """订单退款申请。"""
 
     __tablename__ = "refund_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_refund_requests_amount_positive",
+        ),
+        CheckConstraint(
+            (
+                "status IN ("
+                "'pending', "
+                "'waiting_return', "
+                "'returning', "
+                "'approved', "
+                "'rejected'"
+                ")"
+            ),
+            name="ck_refund_requests_status_allowed",
+        ),
+        CheckConstraint(
+            (
+                "refund_type IN ("
+                "'refund_only', "
+                "'return_and_refund'"
+                ")"
+            ),
+            name="ck_refund_requests_type_allowed",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,

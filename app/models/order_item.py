@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Numeric, String
+from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -14,6 +14,16 @@ class OrderItem(Base):
     """订单中的一项商品。"""
 
     __tablename__ = "order_items"
+    __table_args__ = (
+        CheckConstraint(
+            "quantity >= 1",
+            name="ck_order_items_quantity_positive",
+        ),
+        CheckConstraint(
+            "unit_price >= 0",
+            name="ck_order_items_unit_price_nonnegative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,

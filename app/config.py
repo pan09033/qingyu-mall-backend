@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     SettingsConfigDict,
@@ -13,24 +13,43 @@ class Settings(BaseSettings):
     db_user: str
     db_password: str
     db_host: str = "127.0.0.1"
-    db_port: int = 3306
+    db_port: int = Field(default=3306, ge=1, le=65535)
     db_name: str
     redis_host: str = "127.0.0.1"
-    redis_port: int = 6379
+    redis_port: int = Field(default=6379, ge=1, le=65535)
     redis_password: str
     redis_protocol: Literal[2, 3] = 2
-    redis_connect_timeout_seconds: float = 1.0
-    redis_socket_timeout_seconds: float = 1.0
+    redis_connect_timeout_seconds: float = Field(
+        default=1.0,
+        gt=0,
+    )
+    redis_socket_timeout_seconds: float = Field(
+        default=1.0,
+        gt=0,
+    )
 
-    login_max_failures: int = 5
-    login_failure_window_seconds: int = 300
+    login_max_failures: int = Field(default=5, ge=1)
+    login_failure_window_seconds: int = Field(default=300, ge=1)
     login_lock_durations_seconds: tuple[int, ...] = (
         60,
         300,
         900,
     )
-    login_lock_level_ttl_seconds: int = 86400
-
+    login_lock_level_ttl_seconds: int = Field(
+        default=86400,
+        ge=1,
+    )
+    rabbitmq_host: str = "127.0.0.1"
+    rabbitmq_port: int = Field(default=5672, ge=1, le=65535)
+    rabbitmq_username: str
+    rabbitmq_password: str
+    rabbitmq_virtual_host: str = "/"
+    minio_endpoint: str = "127.0.0.1:9000"
+    minio_public_base_url: str = "http://127.0.0.1:9000"
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket: str = "product-media"
+    minio_secure: bool = False
     app_env: Literal[
         "development",
         "testing",
@@ -47,15 +66,41 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     # jwt
     jwt_secret_key: str
-    jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
+    jwt_algorithm: Literal[
+        "HS256",
+        "HS384",
+        "HS512",
+    ] = "HS256"
+    access_token_expire_minutes: int = Field(
+        default=30,
+        ge=1,
+    )
     payment_callback_secret: str = (
         "development-payment-secret"
     )
-    cors_origins: list[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ]
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+    )
+
+    @field_validator("login_lock_durations_seconds")
+    @classmethod
+    def validate_login_lock_durations(
+        cls,
+        durations: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        """Lua 限流脚本固定使用三级锁定时长。"""
+
+        if len(durations) != 3 or any(
+            duration <= 0 for duration in durations
+        ):
+            raise ValueError(
+                "LOGIN_LOCK_DURATIONS_SECONDS "
+                "必须包含三个正整数"
+            )
+        return durations
 
     @model_validator(mode="after")
     def validate_production_settings(
@@ -81,6 +126,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "生产环境 PAYMENT_CALLBACK_SECRET "
                 "至少需要 32 个字符"
+            )
+
+        if self.jwt_secret_key == self.payment_callback_secret:
+            raise ValueError(
+                "生产环境 JWT 与支付回调不能共用密钥"
+            )
+
+        if "*" in self.cors_origins:
+            raise ValueError(
+                "生产环境 CORS_ORIGINS 不能包含通配符"
             )
 
         return self

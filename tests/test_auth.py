@@ -1,14 +1,21 @@
+from decimal import Decimal
 from unittest.mock import Mock
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 from redis.exceptions import RedisError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.models.order import Order
+from app.models.user import User
 from app.redis_client import redis_client
 from app.services.login_rate_limit import (
     RECORD_LOGIN_FAILURE_SCRIPT,
+    build_login_rate_limit_scope,
 )
 
 
@@ -199,9 +206,13 @@ def test_login_failure_uses_atomic_redis_script(
         },
     )
 
-    lock_key = "rate_limit:login:lock:testclient"
-    failure_key = "rate_limit:login:fail:testclient"
-    level_key = "rate_limit:login:level:testclient"
+    scope = build_login_rate_limit_scope(
+        "testclient",
+        "rate_limit_user",
+    )
+    lock_key = f"rate_limit:login:lock:{scope}"
+    failure_key = f"rate_limit:login:fail:{scope}"
+    level_key = f"rate_limit:login:level:{scope}"
     assert response.status_code == (
         status.HTTP_401_UNAUTHORIZED
     )
@@ -244,7 +255,11 @@ def test_login_rate_limit_returns_429(
         },
     )
 
-    lock_key = "rate_limit:login:lock:testclient"
+    scope = build_login_rate_limit_scope(
+        "testclient",
+        "any_user",
+    )
+    lock_key = f"rate_limit:login:lock:{scope}"
     assert response.status_code == (
         status.HTTP_429_TOO_MANY_REQUESTS
     )
@@ -291,11 +306,31 @@ def test_successful_login_clears_failure_counter(
     )
 
     assert response.status_code == status.HTTP_200_OK
-    mock_delete.assert_called_once_with(
-        "rate_limit:login:fail:testclient",
-        "rate_limit:login:lock:testclient",
-        "rate_limit:login:level:testclient",
+    scope = build_login_rate_limit_scope(
+        "testclient",
+        "clear_counter_user",
     )
+    mock_delete.assert_called_once_with(
+        f"rate_limit:login:fail:{scope}",
+        f"rate_limit:login:lock:{scope}",
+        f"rate_limit:login:level:{scope}",
+    )
+
+
+def test_login_rate_limit_scope_separates_accounts() -> None:
+    """同一 IP 下成功登录一个账号不能清除另一个账号的计数。"""
+
+    first_scope = build_login_rate_limit_scope(
+        "192.0.2.10",
+        "first_user",
+    )
+    second_scope = build_login_rate_limit_scope(
+        "192.0.2.10",
+        "second_user",
+    )
+
+    assert first_scope != second_scope
+    assert "first_user" not in first_scope
 
 
 def test_login_continues_when_rate_limit_read_fails(
@@ -508,6 +543,14 @@ def test_change_password_and_login_with_new_password(
     )
     assert response.content == b""
 
+    old_token_response = client.get(
+        "/auth/me",
+        headers=auth_headers,
+    )
+    assert old_token_response.status_code == (
+        status.HTTP_401_UNAUTHORIZED
+    )
+
     old_password_response = client.post(
         "/auth/login",
         data={
@@ -593,3 +636,59 @@ def test_change_password_without_token(
     assert response.status_code == (
         status.HTTP_401_UNAUTHORIZED
     )
+
+
+def test_delete_account_without_business_records(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    """没有订单的账号可以正常删除。"""
+
+    response = client.delete(
+        "/auth/me",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_204_NO_CONTENT
+
+
+def test_delete_account_preserves_order_history(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+) -> None:
+    """存在订单时拒绝硬删除账号，避免级联删除业务历史。"""
+
+    user = db_session.scalar(
+        select(User).where(User.username == "current_user")
+    )
+    assert user is not None
+
+    order = Order(
+        user_id=user.id,
+        total_amount=Decimal("10.00"),
+        expires_at=datetime.now() + timedelta(minutes=30),
+        receiver_name="测试用户",
+        phone="13800138000",
+        province="广东省",
+        city="深圳市",
+        district="南山区",
+        detail_address="测试地址",
+    )
+    db_session.add(order)
+    db_session.commit()
+    user_id = user.id
+    order_id = order.id
+
+    response = client.delete(
+        "/auth/me",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.json() == {
+        "detail": "账号存在订单记录，不能直接删除",
+    }
+    db_session.expire_all()
+    assert db_session.get(User, user_id) is not None
+    assert db_session.get(Order, order_id) is not None
