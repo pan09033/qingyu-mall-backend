@@ -1,0 +1,32 @@
+# 本机配置与 Git 元数据不进入构建上下文。
+.git/
+.gitignore
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+
+# Python 虚拟环境、缓存和运行产物由镜像自行生成。
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+**/*.log
+
+# 学习资料、测试和编辑器配置不属于运行时程序。
+practice/
+tests/
+docs/
+学习文档/
+.cursor/
+.idea/
+.vscode/
+AGENTS.md
+README.md
