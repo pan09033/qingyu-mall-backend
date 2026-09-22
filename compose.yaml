@@ -1,0 +1,153 @@
+name: qingyu-mall
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:?required}
+      MYSQL_USER: ${DB_USER:?required}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?required}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  pgvector:
+    image: pgvector/pgvector:0.8.6-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${RAG_DB_NAME:?required}
+      POSTGRES_USER: ${RAG_DB_USER:?required}
+      POSTGRES_PASSWORD: ${RAG_DB_PASSWORD:?required}
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    hostname: rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:?required}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?required}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?required}
+    ports:
+      - "${HOST_BIND_IP:?required}:9000:9000"
+      - "${HOST_BIND_IP:?required}:9001:9001"
+    volumes:
+      - minio_data:/data
+
+  backend:
+    build: .
+    image: qingyu-mall-backend:rag
+    restart: unless-stopped
+    env_file: .env.docker
+    volumes:
+      - "${BGE_MODEL_HOST_PATH:?required}:/models/bge-small-zh-v1.5:ro"
+    ports:
+      - "${HOST_BIND_IP:?required}:8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      pgvector:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+
+  outbox_worker:
+    image: qingyu-mall-backend:rag
+    restart: unless-stopped
+    env_file: .env.docker
+    command: ["python", "-m", "scripts.run_outbox_publisher_worker"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  order_worker:
+    image: qingyu-mall-backend:rag
+    restart: unless-stopped
+    env_file: .env.docker
+    command: ["python", "-m", "scripts.run_order_expiration_worker"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  rag_worker:
+    image: qingyu-mall-backend:rag
+    restart: unless-stopped
+    env_file: .env.docker
+    command: ["python", "-m", "app.rag.worker"]
+    volumes:
+      - "${BGE_MODEL_HOST_PATH:?required}:/models/bge-small-zh-v1.5:ro"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build: ../mall-frontend
+    image: qingyu-mall-frontend:rag
+    restart: unless-stopped
+    ports:
+      - "${HOST_BIND_IP:?required}:8088:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+volumes:
+  mysql_data:
+  pgvector_data:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
