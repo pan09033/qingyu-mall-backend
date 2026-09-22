@@ -21,6 +21,7 @@ from app.models.address import Address  # noqa: F401
 from app.models.cart_item import CartItem  # noqa: F401
 from app.models.payment import Payment  # noqa: F401
 from app.models.refund_request import RefundRequest  # noqa: F401
+from app.models.rag_product_sync_task import RagProductSyncTask  # noqa: F401
 # Alembic配置对象
 config = context.config
 

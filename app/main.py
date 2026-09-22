@@ -4,22 +4,24 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config import settings
-from app.exceptions import AppError
-from app.logging_config import setup_logging
-from app.routers import (
+from .config import settings
+from .exceptions import AppError
+from .logging_config import setup_logging
+from .routers import (
     addresses,
     admin_orders,
+    admin_rag,
     admin_refunds,
     auth,
     cart,
     categories,
+    media,
     orders,
     payments,
     products,
+    rag,
     refunds,
     users,
-    media,
 )
 
 
@@ -72,9 +74,12 @@ app.include_router(addresses.router)
 app.include_router(cart.router)
 app.include_router(payments.router)
 app.include_router(admin_orders.router)
+app.include_router(admin_rag.router)
 app.include_router(refunds.router)
 app.include_router(admin_refunds.router)
 app.include_router(media.router)
+app.include_router(rag.router)
+
 
 @app.get("/", tags=["系统"])
 def root() -> dict[str, str]:

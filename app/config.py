@@ -1,6 +1,12 @@
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     SettingsConfigDict,
@@ -15,6 +21,43 @@ class Settings(BaseSettings):
     db_host: str = "127.0.0.1"
     db_port: int = Field(default=3306, ge=1, le=65535)
     db_name: str
+    rag_db_host: str = "127.0.0.1"
+    rag_db_port: int = Field(default=5432, ge=1, le=65535)
+    rag_db_name: str = "mall_rag"
+    rag_db_user: str = "mall_rag_app"
+    rag_db_password: SecretStr = SecretStr("")
+    rag_db_connect_timeout_seconds: int = Field(
+        default=3,
+        ge=1,
+    )
+    rag_embedding_model_path: Path | None = None
+    rag_embedding_dimension: int = Field(
+        default=512,
+        ge=1,
+    )
+    rag_embedding_device: Literal["cpu", "cuda"] = "cpu"
+    rag_minimum_similarity: float = Field(
+        default=0.50,
+        ge=-1,
+        le=1,
+    )
+    rag_retrieval_limit: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+    )
+    deepseek_api_key: SecretStr = SecretStr("")
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-flash"
+    deepseek_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+    )
+    deepseek_max_tokens: int = Field(
+        default=512,
+        ge=1,
+        le=4096,
+    )
     redis_host: str = "127.0.0.1"
     redis_port: int = Field(default=6379, ge=1, le=65535)
     redis_password: str

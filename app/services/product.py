@@ -31,6 +31,10 @@ from app.schemas.product import (
     ProductUpdate,
 )
 from app.services.category import get_category_or_404
+from app.rag.services.product_sync_tasks import (
+    create_product_sync_task,
+)
+from app.rag.sync_task_types import ProductSyncOperation
 
 # 单个后端进程最多允许20个商品详情请求同时回源。
 PRODUCT_DETAIL_DB_MAX_CONCURRENCY = 20
@@ -173,6 +177,18 @@ def create_product(
             db,
             new_product,
         )
+
+        # 执行商品插入并取得ID，暂不提交事务
+        db.flush()
+
+        # 为新商品创建待同步任务，与商品共用当前事务
+        create_product_sync_task(
+            db=db,
+            product_id=new_product.id,
+            operation=ProductSyncOperation.UPSERT,
+        )
+
+        # 一起提交商品和同步任务
         db.commit()
         db.refresh(new_product)
 
@@ -214,6 +230,15 @@ def update_product(
         setattr(product, field_name, new_value)
 
     try:
+        # update_data：本次请求提供的修改字段
+        if update_data:
+            create_product_sync_task(
+                db=db,
+                product_id=product.id,
+                operation=ProductSyncOperation.UPSERT,
+            )
+
+        # 商品修改和同步任务一起提交
         db.commit()
         db.refresh(product)
 
@@ -246,7 +271,17 @@ def delete_product(
         )
 
     try:
+        # 将商品标记为待删除
         remove_product(db, product)
+
+        # 保存删除知识的任务，与商品删除共用当前事务
+        create_product_sync_task(
+            db=db,
+            product_id=product_id,  # 本次删除的商品ID
+            operation=ProductSyncOperation.DELETE,
+        )
+
+        # 一起提交：删除商品、保存同步任务
         db.commit()
 
     except IntegrityError as error:
