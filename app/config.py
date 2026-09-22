@@ -128,6 +128,15 @@ class Settings(BaseSettings):
         ]
     )
 
+    @field_validator("redis_protocol", mode="before")
+    @classmethod
+    def parse_redis_protocol(cls, value: object) -> object:
+        """环境变量是字符串，先转换再校验允许的协议版本。"""
+
+        if isinstance(value, str) and value in ("2", "3"):
+            return int(value)
+        return value
+
     @field_validator("login_lock_durations_seconds")
     @classmethod
     def validate_login_lock_durations(

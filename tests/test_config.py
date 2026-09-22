@@ -36,6 +36,30 @@ def test_login_lock_durations_require_three_positive_values(
         )
 
 
+@pytest.mark.parametrize("protocol", ["2", "3"])
+def test_redis_protocol_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+) -> None:
+    monkeypatch.setenv("REDIS_PROTOCOL", protocol)
+
+    settings = build_settings()
+
+    assert settings.redis_protocol == int(protocol)
+    assert type(settings.redis_protocol) is int
+
+
+@pytest.mark.parametrize("protocol", ["1", "4", "2.5", "invalid", ""])
+def test_redis_protocol_rejects_invalid_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+) -> None:
+    monkeypatch.setenv("REDIS_PROTOCOL", protocol)
+
+    with pytest.raises(ValidationError):
+        build_settings()
+
+
 def test_production_rejects_shared_secrets() -> None:
     with pytest.raises(ValidationError):
         build_settings(
