@@ -12,6 +12,7 @@ from .routers import (
     admin_orders,
     admin_rag,
     admin_refunds,
+    admin_support,
     auth,
     cart,
     categories,
@@ -22,6 +23,7 @@ from .routers import (
     rag,
     refunds,
     users,
+    support,
 )
 
 
@@ -79,6 +81,8 @@ app.include_router(refunds.router)
 app.include_router(admin_refunds.router)
 app.include_router(media.router)
 app.include_router(rag.router)
+app.include_router(support.router)
+app.include_router(admin_support.router)
 
 
 @app.get("/", tags=["系统"])

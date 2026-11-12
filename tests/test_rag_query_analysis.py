@@ -52,7 +52,35 @@ def test_extract_max_price_returns_none_without_valid_budget(
     [
         (
             "已经发货的订单怎样退款？",
+            ("policy", None),
+        ),
+        (
+            "付款后还能修改收货地址吗？",
+            ("policy", None),
+        ),
+        (
+            "收货地址填错了，付款后还能修改吗？",
+            ("policy", None),
+        ),
+        (
+            "已付款未发货能申请仅退款吗？",
+            ("policy", None),
+        ),
+        (
+            "支持货到付款吗？",
+            ("policy", "payment"),
+        ),
+        (
+            "退货退款需要什么条件？",
             ("policy", "refund"),
+        ),
+        (
+            "支付和付款有什么区别？",
+            ("policy", "payment"),
+        ),
+        (
+            "推荐的商品发货后可以退货吗？",
+            ("policy", None),
         ),
         (
             "商城支持哪些支付方式？",

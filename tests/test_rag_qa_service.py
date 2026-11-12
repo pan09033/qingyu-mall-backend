@@ -261,7 +261,18 @@ def test_answer_question_extracts_product_budget() -> None:
     chat_provider.generate_answer.assert_not_called()
 
 
-def test_answer_question_infers_refund_policy_scope() -> None:
+@pytest.mark.parametrize(
+    ("question", "expected_topic"),
+    [
+        ("退款需要满足什么条件？", "refund"),
+        ("已经发货的订单怎样退款？", None),
+        ("付款后还能修改收货地址吗？", None),
+    ],
+)
+def test_answer_question_passes_policy_scope_to_retrieval(
+    question: str,  # question：单主题或跨主题的规则问题
+    expected_topic: str | None,  # expected_topic：预期主题限制
+) -> None:
     rag_db = Mock(spec=Session)
     embedding_provider = Mock(spec=LocalBgeEmbeddingProvider)
     chat_provider = Mock(spec=DeepSeekChatProvider)
@@ -274,17 +285,17 @@ def test_answer_question_infers_refund_policy_scope() -> None:
             rag_db=rag_db,
             embedding_provider_factory=lambda: embedding_provider,
             chat_provider_factory=lambda: chat_provider,
-            question="已经发货的订单怎样退款？",
+            question=question,
             minimum_similarity=0.50,
         )
 
     retrieve.assert_called_once_with(
         rag_db=rag_db,
         embedding_provider=embedding_provider,
-        question="已经发货的订单怎样退款？",
+        question=question,
         minimum_similarity=0.50,
         source_type="policy",
-        topic="refund",
+        topic=expected_topic,
         max_price=None,
         limit=5,
     )

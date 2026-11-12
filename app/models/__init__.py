@@ -9,6 +9,7 @@ from app.models.refund_request import RefundRequest
 from app.models.product import Product
 from app.models.user import User
 from app.models.rag_product_sync_task import RagProductSyncTask
+from app.models.support import SupportConversation, SupportTicket, SupportTurn
 
 __all__ = [
     "Address",
@@ -22,4 +23,7 @@ __all__ = [
     "Product",
     "User",
     "RagProductSyncTask",
+    "SupportConversation",
+    "SupportTicket",
+    "SupportTurn",
 ]

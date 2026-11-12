@@ -68,14 +68,23 @@ def infer_knowledge_scope(
     Literal["product", "policy"] | None,
     str | None,
 ]:
-    """根据用户问题判断优先检索的知识范围。"""
+    """单主题按标签检索，跨主题问题保留全部规则作为候选。"""
 
+    matched_topics = []  # matched_topics：问题中命中的规则主题
     for topic, keywords in POLICY_TOPIC_KEYWORDS:
+        # topic：主题标签；keywords：这个主题对应的关键词
         if any(
             keyword in question
             for keyword in keywords
         ):
-            return "policy", topic
+            matched_topics.append(topic)
+
+    if len(matched_topics) == 1:
+        return "policy", matched_topics[0]
+
+    if len(matched_topics) > 1:
+        # None 表示不限定主题；仍然只检索规则，不混入商品资料。
+        return "policy", None
 
     if any(
         keyword in question
